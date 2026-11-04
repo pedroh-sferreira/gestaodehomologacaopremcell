@@ -1,0 +1,115 @@
+{
+  "cabecalho": {
+    "campos": ["CONTRATADA", "MÊS DE COMPETÊNCIA", "PROJETO"],
+    "status_possiveis": ["CONCLUÍDO", "NOK"]
+  },
+  "regras_gerais": {
+    "assinaturas": "Todas as assinaturas devem ser feitas via GOV.BR ou todas manuais (não misturar).",
+    "validade_certificados_anos": 2,
+    "validar_assinatura_no_gov": true
+  },
+  "documentos": [
+    {
+      "id": "aso",
+      "ordem": 1,
+      "nome": "ASO",
+      "exames_obrigatorios": [
+        "Avaliação clínica (ASO)",
+        "Eletrocardiograma",
+        "Encefalograma",
+        "Glicemia",
+        "Hemograma completo",
+        "Acuidade visual",
+        "Avaliação psicossocial"
+      ],
+      "conferir": ["Endereço da instituição", "Datas dos exames", "Validade","Apto (além de apto para eletricidade e altura, sempre)"]
+      
+    },
+    {
+      "id": "os_nr01",
+      "ordem": 2,
+      "nome": "Ordem de Serviço (NR01)",
+      "conferir": [
+        "Nome, CNPJ e CPF da pessoa",
+        "Função",
+        "Assinatura validada (ressalva: manual)",
+        "Riscos de acordo com a guia"
+      ]
+    },
+    {
+      "id": "nr35",
+      "ordem": 3,
+      "nome": "NR 35 (Trabalho em altura)",
+      "carga_horaria_horas": 16,
+      "portaria_opcional": "MTE Nº 1.259/2026, de 16 de julho de 2026",
+      "portaria_obrigatoria": false,
+      "assinaturas_obrigatorias": [
+        "Responsável de segurança do trabalho (engenheiro e/ou técnico)",
+        "Responsável de saúde (profissional da saúde ou bombeiro)",
+        "Aluno"
+      ],
+      "validade_anos": 2,
+      "conferir": ["Dias do treinamento", "Endereço da instituição", "Validar no GOV"]
+    },
+    {
+      "id": "nr10",
+      "ordem": 4,
+      "nome": "NR 10 (Trabalho em Eletricidade)",
+      "carga_horaria_horas": 40,
+      "portaria_opcional": "MTE Nº 737, DE 29 DE MAIO DE 2026",
+      "portaria_obrigatoria": false,
+      "assinaturas_obrigatorias": [
+        "Responsável de segurança do trabalho (engenheiro e/ou técnico)",
+        "Responsável de saúde (profissional da saúde ou bombeiro)",
+        "Responsável eletricista (engenheiro eletricista ou outros)",
+        "Aluno"
+      ],
+      "validade_anos": 2,
+      "conferir": ["Dias do treinamento", "Endereço da instituição", "Validar no GOV"]
+    },
+    {
+      "id": "nr06",
+      "ordem": 5,
+      "nome": "NR 06 (Uso de EPI's)",
+      "carga_horaria_horas": 4,
+      "assinaturas_obrigatorias": [
+        "Responsável de segurança do trabalho (engenheiro e técnico)",
+        "Aluno"
+      ],
+      "validade_anos": 2,
+      "conferir": ["Validar no GOV"]
+    },
+    {
+      "id": "ficha_epi",
+      "ordem": 6,
+      "nome": "Ficha de EPI",
+      "conferir": [
+        "Função (igual ao ASO)",
+        "CNPJ e razão social"
+      ],
+      "campos_assinatura": [
+        "Nome e CPF",
+        "Razão social e CNPJ"
+
+      ]
+    },
+    {
+      "id": "contrato",
+      "ordem": 7,
+      "nome": "Contrato + Anexo / Cartão CNPJ",
+      "conferir": [
+        "Data de cada contrato",
+        "Razão social",
+        "Nome, CPF e CNPJ",
+        "Todas as assinaturas",
+        "Razão social, CNPJ, nome completo, função e assinatura ao lado de cada item e embaixo",
+        "Validade dos itens (providenciar substituição se necessário)"
+      ]
+    }
+  ],
+  "pontos_a_confirmar": [
+    "O texto do checklist estava embaralhado: assumi que NR 10 tem 4 assinaturas (com responsável eletricista) e NR 35 tem 3 (sem eletricista). Confirmar.",
+    "Assumi a portaria 1.259/2026 para NR 10 e a 737/2026 para NR 35. Confirmar.",
+    "Assinaturas da NR 35 e 'dias do treinamento'/'endereço da instituição' do ASO foram inferidos pela posição no texto."
+  ]
+}

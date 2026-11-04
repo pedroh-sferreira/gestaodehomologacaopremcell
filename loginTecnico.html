@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Acesso do Técnico - PremCell</title>
+<style>
+:root{--brand:#233D8C;--soft:#ADB8D9;--tint:#e9edf7;--ok:#15803d;--okbg:#dcfce7;--nok:#b91c1c;--line:#e2e8f0;--txt:#1e293b;--mut:#64748b}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#eef1f8;color:var(--txt);padding-bottom:env(safe-area-inset-bottom);min-height:100vh}
+header{background:var(--brand);color:#fff;padding:14px 16px;padding-top:calc(14px + env(safe-area-inset-top));border-bottom:4px solid var(--soft);font-weight:700;font-size:18px}
+main{max-width:560px;margin:0 auto;padding:14px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+.tabs{display:flex;background:var(--tint);border-radius:10px;padding:4px;margin-bottom:6px}
+.tabs button{flex:1;border:0;background:transparent;padding:11px;border-radius:8px;font-size:15px;font-weight:600;color:var(--mut);min-height:44px;cursor:pointer}
+.tabs button.on{background:var(--brand);color:#fff}
+label{display:block;font-size:12px;color:var(--mut);margin:14px 0 4px}
+input[type=text],input[type=tel]{width:100%;height:46px;padding:0 12px;border:1px solid var(--line);border-radius:8px;font-size:16px;background:#fff;color:var(--txt)}
+input:focus{outline:2px solid var(--soft);border-color:var(--brand)}
+input.bad{border-color:var(--nok)}input.good{border-color:#22c55e}
+input[readonly]{background:#f1f5f9;color:var(--mut)}
+.err{color:var(--nok);font-size:12px;min-height:16px;margin-top:3px}
+.end{display:none;margin-top:8px;padding:10px 12px;background:var(--okbg);color:var(--ok);border-radius:8px;font-size:13px;line-height:1.4}
+.end.show{display:block}
+.btn{border:0;border-radius:8px;padding:12px 14px;font-size:15px;font-weight:600;background:var(--brand);color:#fff;min-height:46px;width:100%;margin-top:18px;cursor:pointer}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.aviso{background:#fef3c7;color:#b45309;border-radius:8px;padding:10px;font-size:13px;margin-top:12px}
+.aviso.erro{background:#fee2e2;color:var(--nok)}
+.hint{color:var(--mut);font-size:13px;margin-top:10px}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--soft);border-top-color:var(--brand);border-radius:50%;animation:g .7s linear infinite;vertical-align:-1px;margin-right:6px}
+@keyframes g{to{transform:rotate(360deg)}}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header>Acesso do Técnico</header>
+<main>
+
+  <div class="card" id="telaForm">
+    <div class="tabs">
+      <button id="tabLogin" class="on" type="button">Entrar</button>
+      <button id="tabCad" type="button">Cadastrar</button>
+    </div>
+    <section id="secLogin">
+      <label for="lCpf">Login (CPF)</label>
+      <input type="tel" id="lCpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" autocomplete="username">
+      <div class="err" id="eLogin"></div>
+      <button class="btn" id="btnLogin" disabled>Entrar</button>
+      <div class="hint">No primeiro acesso, use o link de cadastro enviado pelo homologador. Depois, entre apenas com o CPF.</div>
+    </section>
+    <section id="secCad" hidden>
+      <label for="nome">Nome completo</label>
+      <input type="text" id="nome" autocomplete="name" placeholder="Seu nome completo">
+      <div class="err" id="eNome"></div>
+
+      <label for="cpf">CPF</label>
+      <input type="tel" id="cpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" autocomplete="off">
+      <div class="err" id="eCpf"></div>
+
+      <label for="cep">CEP</label>
+      <input type="tel" id="cep" inputmode="numeric" maxlength="9" placeholder="00000-000" autocomplete="postal-code">
+      <div class="err" id="eCep"></div>
+      <div class="end" id="endereco"></div>
+
+      <button class="btn" id="btnCad" disabled>Cadastrar</button>
+    </section>
+
+    <div id="msg" class="aviso" hidden></div>
+  </div>
+
+</main>
+
+<script>
+const SB = Object.assign({
+  SUPABASE_URL: 'https://jedjrzxewklahainnyfn.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_lh7kWRJ3QlreuD55BVc2fw_cNiU98VK'
+}, window.APP_CONFIG || {});
+
+const DESTINO = 'tecnico.html';
+const CHAVE_SESSAO = 'premcell_tecnico'; 
+const $ = id => document.getElementById(id);
+const dig = s => String(s || '').replace(/\D/g, '');
+
+const QS = new URLSearchParams(location.search);
+const QCPF = dig(QS.get('cpf'));
+const QNOME = (QS.get('nome') || '').trim().replace(/\s+/g, ' ');
+const VEIO_DO_LINK = QCPF.length === 11;
+
+async function rpc(nome, args) {
+  const r = await fetch(SB.SUPABASE_URL + '/rest/v1/rpc/' + nome, {
+    method: 'POST',
+    headers: { apikey: SB.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify(args)
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((j && j.message) || 'Falha no servidor (' + r.status + ')');
+  return j;
+}
+function abrirSessao(s) {
+  localStorage.setItem(CHAVE_SESSAO, JSON.stringify({ cpf: s.cpf, token: s.token }));
+  location.href = DESTINO;
+}
+
+let endereco = null, cepReq = 0, cepCtrl = null;
+(async () => {
+  try {
+    const s = JSON.parse(localStorage.getItem(CHAVE_SESSAO) || 'null');
+    if (!s || !s.cpf || !s.token) return;
+    if (VEIO_DO_LINK && dig(s.cpf) !== QCPF) return;
+    const p = await rpc('tecnico_perfil', { p_cpf: s.cpf, p_token: s.token });
+    if (p && p.cpf) location.replace(DESTINO);
+  } catch (_) { localStorage.removeItem(CHAVE_SESSAO); }
+})();
+
+function aba(cad) {
+  $('tabLogin').classList.toggle('on', !cad); $('tabCad').classList.toggle('on', cad);
+  $('secLogin').hidden = cad; $('secCad').hidden = !cad; aviso('');
+
+  if (!cad && VEIO_DO_LINK && !$('lCpf').value) { $('lCpf').value = QCPF; mascaraCpf({ target: $('lCpf') }); atualizarLogin(); }
+}
+$('tabLogin').onclick = () => aba(false);
+$('tabCad').onclick = () => aba(true);
+
+function aviso(t, erro) { const m = $('msg'); m.textContent = t || ''; m.hidden = !t; m.classList.toggle('erro', !!erro); }
+
+function cpfValido(c) {
+  c = dig(c);
+  if (c.length !== 11 || /^(\d)\1+$/.test(c)) return false;
+  for (const n of [9, 10]) { let s = 0; for (let i = 0; i < n; i++) s += +c[i] * (n + 1 - i); if ((s * 10 % 11) % 10 !== +c[n]) return false; }
+  return true;
+}
+function mascaraCpf(e) {
+  const d = dig(e.target.value).slice(0, 11);
+  e.target.value = d.replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+}
+
+$('lCpf').addEventListener('input', e => { mascaraCpf(e); atualizarLogin(); });
+function atualizarLogin() { $('btnLogin').disabled = !cpfValido($('lCpf').value); $('eLogin').textContent = ''; }
+
+$('btnLogin').onclick = async () => {
+  $('btnLogin').disabled = true; aviso('Entrando...');
+  try {
+    const s = await rpc('tecnico_login_cpf', { p_cpf: dig($('lCpf').value) });
+    if (!s || !s.token) { aviso(''); $('eLogin').textContent = 'CPF não cadastrado. Use o link enviado pelo homologador.'; $('btnLogin').disabled = false; return; }
+    abrirSessao(s);
+  } catch (e) { aviso('Não foi possível entrar: ' + e.message, true); $('btnLogin').disabled = false; }
+};
+
+function nomeValido() { const n = $('nome').value.trim().replace(/\s+/g, ' '); return n.length >= 5 && n.split(' ').length >= 2; }
+$('nome').addEventListener('input', atualizarCad);
+$('nome').addEventListener('blur', () => { const ok = !$('nome').value.trim() || nomeValido(); $('nome').classList.toggle('bad', !ok); $('eNome').textContent = ok ? '' : 'Informe nome e sobrenome'; });
+
+function validarCpf() {
+  const d = dig($('cpf').value), cheio = d.length === 11, ok = !cheio || cpfValido(d);
+  $('cpf').classList.toggle('bad', !ok); $('cpf').classList.toggle('good', cheio && ok);
+  $('eCpf').textContent = ok ? '' : 'CPF inválido'; return cheio && ok;
+}
+$('cpf').addEventListener('input', e => { mascaraCpf(e); validarCpf(); atualizarCad(); });
+
+async function buscarCep(cep, signal) {
+  try {
+    const r = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal });
+    if (!r.ok) throw new Error();
+    const j = await r.json();
+    if (j.erro) return null;
+    return { cep, logradouro: j.logradouro, bairro: j.bairro, cidade: j.localidade, uf: j.uf };
+  } catch (e) { if (e.name === 'AbortError') throw e; }
+  const r2 = await fetch(`https://brasilapi.com.br/api/cep/v1/${cep}`, { signal });   // reserva
+  if (r2.status === 404) return null;
+  if (!r2.ok) throw new Error();
+  const j2 = await r2.json();
+  return { cep, logradouro: j2.street, bairro: j2.neighborhood, cidade: j2.city, uf: j2.state };
+}
+$('cep').addEventListener('input', async e => {
+  const d = dig(e.target.value).slice(0, 8);
+  e.target.value = d.length > 5 ? d.slice(0, 5) + '-' + d.slice(5) : d;
+  endereco = null; $('endereco').className = 'end'; $('endereco').textContent = ''; $('eCep').textContent = ''; $('cep').classList.remove('bad', 'good');
+  if (cepCtrl) cepCtrl.abort();
+  atualizarCad();
+  if (d.length !== 8) return;
+  const meu = ++cepReq; cepCtrl = new AbortController();
+  $('eCep').innerHTML = '<span class="spin"></span>Consultando CEP...';
+  try {
+    const end = await buscarCep(d, cepCtrl.signal);
+    if (meu !== cepReq) return;
+    if (!end) { $('cep').classList.add('bad'); $('eCep').textContent = 'CEP não encontrado'; }
+    else {
+      endereco = end; $('cep').classList.add('good'); $('eCep').textContent = '';
+      $('endereco').textContent = [end.logradouro, end.bairro, end.cidade + '/' + end.uf].filter(Boolean).join(' · ');
+      $('endereco').className = 'end show';
+    }
+  } catch (err) {
+    if (err.name === 'AbortError' || meu !== cepReq) return;
+    $('cep').classList.add('bad'); $('eCep').textContent = 'Não foi possível consultar o CEP. Tente novamente.';
+  }
+  atualizarCad();
+});
+function atualizarCad() { $('btnCad').disabled = !(nomeValido() && validarCpf() && endereco); }
+
+$('btnCad').onclick = async () => {
+  if (!(nomeValido() && validarCpf() && endereco)) return;
+  $('btnCad').disabled = true; aviso('Cadastrando...');
+  try {
+    const s = await rpc('tecnico_cadastrar', {
+      p_cpf: dig($('cpf').value),
+      p_nome: $('nome').value.trim().replace(/\s+/g, ' '),
+      p_cep: endereco.cep,
+      p_logradouro: endereco.logradouro || null,
+      p_bairro: endereco.bairro || null,
+      p_cidade: endereco.cidade || null,
+      p_uf: endereco.uf || null,
+      p_senha: null 
+    });
+    try { await rpc('homologacao_cadastro_tecnico', { p_cpf: dig($('cpf').value) }); } catch (_) {}
+    abrirSessao(s);
+  } catch (e) {
+    if (/CPF_JA_CADASTRADO/.test(e.message)) { aba(false); $('lCpf').value = $('cpf').value; atualizarLogin(); aviso('Este CPF já está cadastrado. Clique em "Entrar".', true); }
+    else aviso('Não foi possível cadastrar: ' + e.message, true);
+    $('btnCad').disabled = false;
+  }
+};
+
+if (VEIO_DO_LINK || QNOME) {
+  aba(true);
+  if (QNOME) $('nome').value = QNOME;
+  if (VEIO_DO_LINK) {
+    $('cpf').value = QCPF; mascaraCpf({ target: $('cpf') });
+    if (cpfValido(QCPF)) $('cpf').readOnly = true;
+    validarCpf();
+  }
+  atualizarCad();
+  setTimeout(() => $('cep').focus(), 100);
+}
+</script>
+</body>
+</html>

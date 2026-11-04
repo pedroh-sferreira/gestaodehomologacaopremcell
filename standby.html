@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Standby - Homologações - PremCell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/auth.js"></script>
+</head>
+<body>
+<header class="top">
+  <h1>Homologações Reprovadas</h1>
+  <p class="desc">Equipes que a diretoria decidiu não homologar. Ficam fora do prazo (SLA) e do fluxo normal.</p>
+  <div class="acts">
+    <button type="button" class="ghost" onclick="carregar()">Atualizar</button>
+  </div>
+</header>
+<nav id="navPrincipal"></nav>
+<script src="/js/nav.js"></script>
+<main><div id="app" aria-live="polite"></div></main>
+<script src="/js/diretoria-comum.js"></script>
+<script>
+async function carregar() {
+  const token = tokenAdm();
+  if (!token) { el('app').innerHTML = '<div class="card"><p class="msg">Sessão sem token. Entre novamente.</p></div>'; return; }
+  el('app').innerHTML = '<div class="card"><p class="msg"><span class="spin"></span>Carregando...</p></div>';
+  try {
+    const L = await vdRpc('diretoria_listar', { p_token: token, p_status: 'STANDBY' }) || [];
+    el('app').innerHTML = `<div class="card"><div class="chead"><h2>Reprovados (${L.length})</h2></div>
+      ${L.length ? `<div class="cgrid">${L.map(h => `<div class="ccard pend">
+        <div class="nm">${esc(h.nome)}</div>
+        ${blocoCaso(h)}
+        <div class="motivo" style="margin-top:8px"><b>Decisão da diretoria (${esc(fmtTs(h.decidido_em))}):</b> ${esc(h.motivo_decisao || 'sem motivo registrado')}</div>
+      </div>`).join('')}</div>` : '<p class="msg">Nenhuma equipe em standby.</p>'}</div>`;
+  } catch (e) {
+    el('app').innerHTML = `<div class="card"><p class="msg" style="color:var(--nok)">⚠ ${esc(e.message)}</p></div>`;
+  }
+}
+carregar();
+</script>
+</body>
+</html>

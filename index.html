@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Login | Validação de Documentação</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; font-family:Arial, Helvetica, sans-serif; }
+body { min-height:100vh; display:flex; align-items:center; justify-content:center; background:#F2F2F2; padding:20px; }
+.login-container { width:100%; max-width:420px; background:#FFFFFF; border-radius:14px; padding:40px; box-shadow:0 10px 35px rgba(35,61,140,.15); border:1px solid #ADB8D9; }
+.logo-container { text-align:center; margin-bottom:30px; }
+.logo-container img { max-width:200px; max-height:80px; object-fit:contain; }
+.title { text-align:center; color:#233D8C; font-size:25px; font-weight:700; margin-bottom:8px; }
+.subtitle { text-align:center; color:#6F7894; font-size:14px; margin-bottom:30px; }
+.input-group { margin-bottom:20px; }
+.input-group label { display:block; color:#233D8C; font-size:14px; font-weight:600; margin-bottom:8px; }
+.input-group input { width:100%; height:48px; padding:0 15px; border:1px solid #ADB8D9; border-radius:8px; background:#F2F2F2; color:#233D8C; font-size:15px; outline:none; transition:.2s ease; }
+.input-group input:focus { border-color:#2E4CA6; background:#FFFFFF; box-shadow:0 0 0 3px rgba(46,76,166,.12); }
+.input-group input::placeholder { color:#8E99B5; }
+.options { display:flex; justify-content:space-between; align-items:center; margin-bottom:25px; font-size:13px; }
+.remember { display:flex; align-items:center; gap:7px; color:#59637E; }
+.remember input { accent-color:#2E4CA6; cursor:pointer; }
+.login-err { color:#C42B2B; background:#F8E1DF; border-radius:8px; padding:10px 12px; font-size:13px; margin-bottom:16px; }
+.login-button { width:100%; height:50px; border:none; border-radius:8px; background:#233D8C; color:#FFFFFF; font-size:15px; font-weight:700; cursor:pointer; transition:.2s ease; }
+.login-button:hover { background:#2E4CA6; transform:translateY(-1px); box-shadow:0 5px 15px rgba(35,61,140,.25); }
+.login-button:active { transform:translateY(0); }
+.login-button:disabled { opacity:.6; cursor:not-allowed; transform:none; box-shadow:none; }
+#apiStatus { text-align:center; font-size:12px; color:#6F7894; margin:-14px 0 18px; line-height:1.4; word-break:break-word; }
+@media (max-width:480px) { .login-container { padding:30px 25px; } .title { font-size:22px; } }
+</style>
+</head>
+<body>
+<div class="login-container">
+  <div class="logo-container"><img src="img/logo_azul.png" alt="Logo da Empresa"></div>
+  <h1 class="title">Bem-vindo</h1>
+  <p class="subtitle">Entre com seus dados para acessar o sistema</p>
+
+  <p id="apiStatus">Verificando conexão com o servidor...</p>
+
+  <form id="formLogin" novalidate>
+    <div class="input-group">
+      <label for="usuario">Usuário</label>
+      <input type="text" id="usuario" name="usuario" placeholder="Digite seu usuário" autocomplete="username" required>
+    </div>
+    <div class="input-group">
+      <label for="senha">Senha</label>
+      <input type="password" id="senha" name="senha" placeholder="Digite sua senha" autocomplete="current-password" required>
+    </div>
+    <div class="options">
+      <label class="remember"><input type="checkbox" name="lembrar" id="lembrar"> Lembrar de mim</label>
+    </div>
+    <p class="login-err" id="loginErr" role="alert" hidden></p>
+    <button type="submit" class="login-button" id="btnEntrar">ENTRAR</button>
+  </form>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://jedjrzxewklahainnyfn.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_lh7kWRJ3QlreuD55BVc2fw_cNiU98VK';
+
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbyTHNHS0S0P5s73yUJkwCM2zd9VsOdRX2WsIA5JR-fxSuoNzlwfSumfn0i3PdRF5WXF/exec';
+
+const DESTINO = 'validador.html';
+const $ = id => document.getElementById(id);
+
+async function rpc(fn, args) {
+  const r = await fetch(SUPABASE_URL + '/rest/v1/rpc/' + fn, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: 'Bearer ' + SUPABASE_ANON_KEY
+    },
+    body: JSON.stringify(args || {})
+  });
+  const t = await r.text();
+  let j;
+  try { j = JSON.parse(t); }
+  catch (_) { throw new Error('Resposta inválida do Supabase: "' + t.slice(0, 150) + '"'); }
+  if (!r.ok) {
+    const m = (j && (j.message || j.hint || j.details)) || ('HTTP ' + r.status);
+    throw new Error(/Could not find the function/i.test(m)
+      ? 'A função de login não existe no Supabase. Rode o SQL do login (vd_login / vd_verificar).' : m);
+  }
+  return j;
+}
+
+function lerSessao() {
+  try { return JSON.parse(localStorage.getItem('vd_sess') || sessionStorage.getItem('vd_sess') || 'null'); }
+  catch (_) { return null; }
+}
+function limparSessao() { localStorage.removeItem('vd_sess'); sessionStorage.removeItem('vd_sess'); }
+
+(async () => {
+  const s0 = lerSessao();
+  if (!s0 || !s0.token || s0.exp < Date.now()) return;
+  try {
+    const j = await rpc('vd_verificar', { p_token: s0.token });
+    if (j && j.ok) { location.replace(DESTINO); return; }
+  } catch (_) {}
+  limparSessao();
+})();
+
+(async () => {
+  const s = $('apiStatus');
+  try {
+    const j = await rpc('vd_verificar', { p_token: 'teste' });
+    if (j && j.sessao_expirada) { s.textContent = '● Servidor conectado (Supabase)'; s.style.color = '#15803d'; }
+    else { s.textContent = '● Resposta inesperada do servidor'; s.style.color = '#b91c1c'; }
+  } catch (e) {
+    s.textContent = '● ' + e.message; s.style.color = '#b91c1c';
+  }
+})();
+
+function erro(msg) { const e = $('loginErr'); e.textContent = msg; e.hidden = !msg; }
+
+$('formLogin').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const usuario = $('usuario').value.trim(), senha = $('senha').value, lembrar = $('lembrar').checked;
+  if (!usuario || !senha) { erro('Informe usuário e senha.'); return; }
+  erro('');
+  const btn = $('btnEntrar');
+  btn.disabled = true; btn.textContent = 'ENTRANDO...';
+  try {
+    const j = await rpc('vd_login', { p_usuario: usuario, p_senha: senha, p_lembrar: lembrar });
+    if (!j || !j.ok) throw new Error((j && j.erro) || 'Não foi possível entrar.');
+
+    const sess = { url: GAS_URL, token: j.token, exp: j.exp, usuario: j.usuario, nome: j.nome, perfil: j.perfil };
+    limparSessao();
+    (lembrar ? localStorage : sessionStorage).setItem('vd_sess', JSON.stringify(sess));
+    location.replace(DESTINO);
+  } catch (e) {
+    erro(e.message);
+    btn.disabled = false; btn.textContent = 'ENTRAR';
+    $('senha').value = ''; $('senha').focus();
+  }
+});
+</script>
+</body>
+</html>

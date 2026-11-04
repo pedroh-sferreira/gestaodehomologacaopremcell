@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Validação de Documentação - PremCell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/auth.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/js/supabase-adapter.js"></script>
+</head>
+<body>
+<header class="top">
+  <h1>Validação de Documentação</h1>
+  <p class="desc">Envio, análise e acompanhamento da documentação dos colaboradores.</p>
+  <div class="acts">
+    <button type="button" class="primary" onclick="dispararHomologacao()">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg>
+      Disparar homologação
+    </button>
+    <button type="button" class="ghost" onclick="abrirHomologacoes()">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      Homologações
+    </button>
+    <button type="button" class="primary" onclick="novoEnvio()">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+      Enviar documento
+    </button>
+    <button type="button" class="ghost" onclick="carregarHist()">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></svg>
+      Atualizar histórico
+    </button>
+  </div>
+</header>
+<nav id="navPrincipal"></nav>
+<script src="/js/nav.js"></script>
+<main>
+  <div id="app" aria-live="polite"></div>
+</main>
+
+<div id="modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="modalTit" onclick="if(event.target===this)fecharModal()">
+  <div class="box">
+    <div class="bar2">
+      <span id="modalTit"></span>
+      <button type="button" class="ghost" onclick="fecharModal()">Fechar</button>
+    </div>
+    <div id="modalBody" style="display:flex;flex:1;min-height:0"></div>
+  </div>
+</div>
+<script src="/js/sugestao.js"></script>
+<script src="/js/validador.js"></script>
+<script src="/js/homologacao.js"></script>
+<script src="/js/homologacao-aptidao.js"></script>
+<script src="/js/homologacao-regional.js"></script>
+<script>
+  document.addEventListener('keydown', function (e) {
+    var m = document.getElementById('modal');
+    if (e.key === 'Escape' && m && !m.classList.contains('hidden') && typeof fecharModal === 'function') fecharModal();
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aprovação do Gerente - PremCell</title>
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/config.js"></script>
+<script src="/js/auth.js"></script>
+</head>
+<body>
+<header class="top">
+  <h1>Aprovação do Gerente</h1>
+  <p class="desc">Custo Homologação: confira a lista de itens, aprove informando o método de desconto ou recuse informando o motivo.</p>
+  <div class="acts"><button class="ghost" onclick="carregar()">↻ Atualizar</button></div>
+</header>
+
+<nav id="navPrincipal"></nav>
+<script src="/js/nav.js"></script>
+
+<main>
+  <div id="cont" class="counters"></div>
+  <div class="hf3">
+    <input type="text" id="fQ" placeholder="Buscar por equipe, colaborador, CPF, item ou observação..." oninput="F.q=this.value;renderLista()">
+    <select id="fSt" onchange="F.st=this.value;renderLista()">
+      <option value="PENDENTE">Aguardando o gerente</option>
+      <option value="APROVADA">Aprovados</option>
+      <option value="RECUSADA">Recusados</option>
+      <option value="">Todos os status</option>
+    </select>
+    <select id="fTp" onchange="F.tipo=this.value;renderLista()">
+      <option value="">Equipes e colaboradores</option>
+      <option value="EQUIPE">Só equipes</option>
+      <option value="COLABORADOR">Só colaboradores</option>
+    </select>
+  </div>
+  <div id="lista"></div>
+</main>
+
+<script>
+const CFG = Object.assign({
+  SUPABASE_URL: 'https://jedjrzxewklahainnyfn.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_lh7kWRJ3QlreuD55BVc2fw_cNiU98VK'
+}, window.APP_CONFIG || {});
+const DESC_MET = { PARCELADO: 'Parcelado', A_VISTA: 'À vista' };
+const MAX_PARCELAS = 24;
+
+const NEG_MODOS = { PARCELAS: 'Parcelas', POR_SITE: 'Por site', A_VISTA: 'À vista' };   // só para custos antigos
+const ST = { PENDENTE: ['b-warn', 'AGUARDANDO', 'pend'], APROVADA: ['b-ok', 'APROVADO', 'ok'], RECUSADA: ['b-nok', 'RECUSADO', 'nok'] };
+
+let L = [], F = { st: 'PENDENTE', q: '', tipo: '' }, erro = '', carga = true;
+const el = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const digitos = s => String(s || '').replace(/\D/g, '');
+const fmtCpf = s => { const d = digitos(s); return d.length === 11 ? d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4') : (s || ''); };
+const fmtBRL = n => Number(n).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const fmtData = s => s ? new Date(s).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+
+const negNum = v => { const x = typeof v === 'number' ? v : parseFloat(String(v == null ? '' : v).replace(',', '.')); return isFinite(x) ? x : 0; };
+
+const itensDe = n => Array.isArray(n.itens) ? n.itens : [];
+const totalDe = n => {
+  const v = negNum(n.valor);
+  if (v > 0) return Math.round(v * 100) / 100;
+  return Math.round(itensDe(n).reduce((s, i) => s + negNum(i.valor), 0) * 100) / 100;
+};
+const qtdParcelas = p => { const q = Math.floor(negNum(p)); return q >= 1 ? q : 0; };
+function parcelasCentavos(total, n) {
+  const q = qtdParcelas(n);
+  if (!q) return [];
+  const c = Math.round(negNum(total) * 100), base = Math.floor(c / q), resto = c - base * q;
+  return Array.from({ length: q }, (_, i) => base + (i < resto ? 1 : 0));
+}
+function parcelasTxt(total, n) {
+  const grupos = [];
+  parcelasCentavos(total, n).forEach(c => { const g = grupos[grupos.length - 1]; if (g && g.c === c) g.q++; else grupos.push({ c, q: 1 }); });
+  return grupos.map(g => `${g.q}x de ${fmtBRL(g.c / 100)}`).join(' + ');
+}
+const modoTxt = n => {
+  if (itensDe(n).length) return itensDe(n).length + ' item(ns)';
+  const q = qtdParcelas(n.parcelas);
+  if (n.modo_pagamento === 'PARCELAS' && q >= 2) return parcelasTxt(totalDe(n), q);
+  return NEG_MODOS[n.modo_pagamento] || '';
+};
+
+const metodoTxt = n => {
+  const total = totalDe(n), q = qtdParcelas(n.metodo_parcelas);
+  let t = DESC_MET[n.metodo_desconto] || n.metodo_desconto || '—';
+  if (n.metodo_desconto === 'PARCELADO') t += q >= 2 ? ' em ' + parcelasTxt(total, q) : ' (nº de parcelas não informado)';
+  else if (n.metodo_desconto === 'A_VISTA') t += ' (' + fmtBRL(total) + ')';
+  return t;
+};
+
+const itensHtml = n => itensDe(n).length
+  ? `<table style="margin:8px 0;width:100%"><tr><th>Item</th><th>Valor</th><th>Observação</th></tr>${itensDe(n).map(i =>
+      `<tr><td>${esc(i.item)}</td><td>${esc(fmtBRL(negNum(i.valor)))}</td><td>${esc(i.obs || '—')}</td></tr>`).join('')}</table>` : '';
+const stDe = n => ST[n.status_gerente] ? n.status_gerente : 'PENDENTE';
+const sess = () => (window.vdSessao && window.vdSessao()) || {};
+
+function toast(msg, fim) {
+  let t = el('toast');
+  if (!t) {
+    t = document.createElement('div'); t.id = 'toast';
+    t.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:80;background:#0f172a;color:#fff;padding:12px 16px;border-radius:10px;font-size:13px;max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,.3)';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg; t.classList.remove('hidden');
+  if (fim) setTimeout(() => t.classList.add('hidden'), 6000);
+}
+async function rpc(fn, args) {
+  const r = await fetch(`${CFG.SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    method: 'POST', headers: { apikey: CFG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify(args || {})
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((j && (j.message || j.error)) || 'Falha no servidor (' + r.status + ')');
+  return j;
+}
+
+async function carregar() {
+  const s = sess();
+  if (!s.token) { erro = 'Sessão não encontrada. Faça login novamente.'; carga = false; renderLista(); return; }
+  carga = true; renderLista();
+  try {
+    let r = await rpc('gerente_negociacoes_listar', { p_token: s.token, p_status: 'TODAS' });
+    if (r && !Array.isArray(r)) r = Array.isArray(r.data) ? r.data : (Array.isArray(r.rows) ? r.rows : []);
+    L = r || []; erro = '';
+  } catch (e) { erro = e.message; }
+  carga = false; renderLista();
+}
+
+function renderLista() {
+  const c = k => L.filter(n => stDe(n) === k).length;
+  const pend = L.filter(n => stDe(n) === 'PENDENTE');
+  const somaPend = pend.reduce((t, n) => t + Math.round(totalDe(n) * 100), 0) / 100;
+  el('cont').innerHTML = `
+    <div class="cnt"><b>${L.length}</b><span>Custos lançados</span></div>
+    <div class="cnt pend"><b>${pend.length}</b><span>Aguardando você · ${esc(fmtBRL(somaPend))}</span></div>
+    <div class="cnt ok"><b>${c('APROVADA')}</b><span>Aprovados</span></div>
+    <div class="cnt nok"><b>${c('RECUSADA')}</b><span>Recusados</span></div>`;
+
+  const box = el('lista');
+  if (carga && !L.length) { box.innerHTML = '<p class="msg"><span class="spin"></span>Carregando...</p>'; return; }
+  if (erro) { box.innerHTML = `<p class="msg" style="color:var(--nok)">⚠ ${esc(erro)}</p>`; return; }
+  const q = norm(F.q);
+  const X = L.filter(n => (!F.st || stDe(n) === F.st) && (!F.tipo || n.tipo === F.tipo) &&
+    (!q || norm([n.equipe_nome, n.nome, n.cpf, n.observacao, n.estado_atuacao, itensDe(n).map(i => i.item + ' ' + (i.obs || '')).join(' ')].join(' ')).includes(q)));
+  if (!X.length) { box.innerHTML = '<p class="msg">Nenhum custo de homologação nesta visão.</p>'; return; }
+  box.innerHTML = `<div class="cgrid">` + X.map(cardNeg).join('') + `</div>`;
+}
+
+function cardNeg(n) {
+  const s = stDe(n), [bcls, rot, ccls] = ST[s];
+  const nome = n.tipo === 'EQUIPE' ? (n.equipe_nome || 'Equipe') : (n.nome || 'Colaborador');
+  const sub = n.tipo === 'EQUIPE'
+    ? `Equipe · ${(n.cpfs || []).length} integrante(s)`
+    : `CPF ${fmtCpf(n.cpf)}`;
+  let dec = '';
+  if (s === 'APROVADA') {
+    dec = `<div class="decbox ok">✓ Gerente aprovou em ${esc(fmtData(n.gerente_decidido_em))}${n.gerente_nome ? ' · ' + esc(n.gerente_nome) : ''}
+💳 Método de desconto: ${esc(metodoTxt(n))}${n.metodo_desconto_obs ? '\n' + esc(n.metodo_desconto_obs) : ''}${n.gerente_obs ? '\n📝 ' + esc(n.gerente_obs) : ''}</div>`;
+  } else if (s === 'RECUSADA') {
+    dec = `<div class="decbox nok">✗ Gerente recusou em ${esc(fmtData(n.gerente_decidido_em))}${n.gerente_nome ? ' · ' + esc(n.gerente_nome) : ''}
+📝 Motivo: ${esc(n.gerente_obs || '—')}</div>`;
+  }
+  return `<div class="ccard static ${ccls}">
+    <div class="hd"><div><div class="nm">${esc(nome)}</div>
+      <div class="sub">${esc(sub)}${n.estado_atuacao ? ' · ' + esc(n.estado_atuacao) : ''}</div></div>
+      <span class="badge ${bcls}">${rot}</span></div>
+    <div class="val">${esc(fmtBRL(totalDe(n)))}</div>
+    ${itensHtml(n)}
+    <div class="sub">${esc(modoTxt(n))} · lançado em ${esc(fmtData(n.criado_em))}${n.atualizado_em ? ' · editado em ' + esc(fmtData(n.atualizado_em)) : ''}</div>
+    ${n.observacao ? `<div class="sub" style="white-space:pre-wrap">📝 Homologador: ${esc(n.observacao)}</div>` : ''}
+    ${dec}
+    ${s === 'PENDENTE' ? `<div class="acoes">
+      <button class="primary sm" onclick="abrirDecisao('${esc(n.id)}','APROVADA')">✓ Aprovar</button>
+      <button class="danger sm" onclick="abrirDecisao('${esc(n.id)}','RECUSADA')">✗ Recusar</button></div>` : ''}
+  </div>`;
+}
+
+let DEC = null;
+function ovAbrir(corpo) {
+  let o = el('ov');
+  if (!o) {
+    o = document.createElement('div'); o.id = 'ov';
+    o.style.cssText = 'position:fixed;inset:0;z-index:70;background:rgba(15,23,42,.55);backdrop-filter:blur(3px);display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+    o.onclick = e => { if (e.target === o) fecharOv(); };
+    document.body.appendChild(o);
+  }
+  o.innerHTML = `<div class="card" style="max-width:560px;width:100%;margin:0">${corpo}</div>`;
+}
+function fecharOv() { const o = el('ov'); if (o) o.remove(); DEC = null; }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharOv(); });
+
+function abrirDecisao(id, decisao) {
+  const n = L.find(x => String(x.id) === String(id)); if (!n) return;
+  DEC = { n, decisao };
+  const nome = n.tipo === 'EQUIPE' ? (n.equipe_nome || 'Equipe') : (n.nome || 'Colaborador');
+  const ap = decisao === 'APROVADA';
+  const campos = ap ? `
+      <div class="field"><label>Método de desconto (obrigatório)</label>
+        <select id="dMet" onchange="dAtualizar()"><option value="">Selecione...</option>
+          ${Object.entries(DESC_MET).map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select></div>
+      <div class="field" id="dParcBox" style="display:none"><label>Número de parcelas (obrigatório, de 2 a ${MAX_PARCELAS})</label>
+        <input type="number" id="dParc" min="2" max="${MAX_PARCELAS}" step="1" inputmode="numeric" placeholder="Ex.: 3" oninput="dAtualizar()">
+        <div id="dParcPrev" class="sub" style="margin-top:6px;font-weight:700"></div></div>
+      <div class="field" id="dMetObsBox" style="display:none"><label id="dMetObsRot">Detalhe do desconto (opcional)</label>
+        <textarea id="dMetObs" rows="2" maxlength="300" placeholder="Ex.: a partir do próximo repasse"></textarea></div>
+      <div class="field"><label>Parecer (opcional)</label><textarea id="dObs" rows="2" maxlength="500"></textarea></div>`
+    : `<div class="field"><label>Motivo da recusa (obrigatório)</label>
+        <textarea id="dObs" rows="4" maxlength="500" placeholder="Explique ao homologador por que o custo foi recusado..."></textarea></div>`;
+  ovAbrir(`
+    <div class="chead"><h2>${ap ? 'Aprovar custo' : 'Recusar custo'}</h2><button class="ghost sm" onclick="fecharOv()">Fechar</button></div>
+    <p class="dica" style="margin-top:12px"><b>${esc(nome)}</b> · ${esc(fmtBRL(totalDe(n)))} · ${esc(modoTxt(n))}</p>
+    ${itensHtml(n)}
+    <div style="display:grid;gap:12px">${campos}
+      <div id="dErr" class="cmsg erro"></div>
+      <button class="${ap ? 'primary' : 'danger'}" id="dGo" onclick="confirmarDecisao()">${ap ? 'Confirmar aprovação' : 'Confirmar recusa'}</button>
+    </div>`);
+}
+function dAtualizar() {
+  if (!DEC) return;
+  const m = el('dMet').value, parc = m === 'PARCELADO';
+  el('dParcBox').style.display = parc ? 'block' : 'none';
+  el('dMetObsBox').style.display = m ? 'block' : 'none';
+  if (parc) {
+    const q = qtdParcelas(el('dParc').value), total = totalDe(DEC.n);
+    el('dParcPrev').textContent = q >= 2 && q <= MAX_PARCELAS ? 'Fica: ' + parcelasTxt(total, q) + '  (total ' + fmtBRL(total) + ')' : '';
+  }
+}
+async function confirmarDecisao() {
+  if (!DEC) return;
+  const err = m => { el('dErr').textContent = m; };
+  const { n, decisao } = DEC;
+  const obs = (el('dObs').value || '').trim();
+  let metodo = null, metodoObs = null, parcelas = null;
+  if (decisao === 'APROVADA') {
+    metodo = el('dMet').value;
+    if (!metodo) return err('Informe o método de desconto.');
+    if (metodo === 'PARCELADO') {
+      parcelas = qtdParcelas(el('dParc').value);
+      if (parcelas < 2 || parcelas > MAX_PARCELAS) return err('Informe o número de parcelas (de 2 a ' + MAX_PARCELAS + ').');
+    }
+    metodoObs = (el('dMetObs').value || '').trim();
+  } else if (obs.length < 5) return err('Informe o motivo da recusa (mínimo 5 caracteres).');
+  const s = sess(); if (!s.token) return err('Sessão sem token. Entre novamente.');
+  const b = el('dGo'); b.disabled = true; err('');
+  try {
+    await rpc('gerente_negociacao_decidir', {
+      p_token: s.token, p_id: String(n.id), p_decisao: decisao,
+      p_metodo: metodo, p_parcelas: parcelas, p_metodo_obs: metodoObs || null, p_obs: obs || null
+    });
+    fecharOv();
+    toast(decisao === 'APROVADA' ? 'Custo aprovado. O homologador já pode ver.' : 'Custo recusado. O homologador já pode ver.', true);
+    await carregar();
+  } catch (e) { b.disabled = false; err('Não foi possível salvar: ' + e.message); }
+}
+
+carregar();
+</script>
+</body>
+</html>

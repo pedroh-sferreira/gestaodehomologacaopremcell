@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diretoria - Análise de Homologações - PremCell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/auth.js"></script>
+</head>
+<body>
+<header class="top">
+  <h1>Análise de homologações</h1>
+  <p class="desc">Casos com algum item Inapto aguardando decisão: Aprovar ou Reprovar.</p>
+  <div class="acts">
+    <button type="button" class="ghost" onclick="carregar()">Atualizar</button>
+  </div>
+</header>
+<nav id="navPrincipal"></nav>
+<script src="/js/nav.js"></script>
+<main><div id="app" aria-live="polite"></div></main>
+<script src="/js/diretoria-comum.js"></script>
+<script>
+let CASOS = [], DEC = [];
+
+async function carregar() {
+  const token = tokenAdm();
+  if (!token) { el('app').innerHTML = '<div class="card"><p class="msg">Sessão sem token. Entre novamente.</p></div>'; return; }
+  el('app').innerHTML = '<div class="card"><p class="msg"><span class="spin"></span>Carregando...</p></div>';
+  try {
+    [CASOS, DEC] = await Promise.all([
+      vdRpc('diretoria_listar', { p_token: token, p_status: 'AGUARDANDO' }),
+      vdRpc('diretoria_listar', { p_token: token, p_status: 'DECIDIDAS' })
+    ]);
+    render();
+  } catch (e) {
+    el('app').innerHTML = `<div class="card"><p class="msg" style="color:var(--nok)">⚠ ${esc(e.message)}</p></div>`;
+  }
+}
+
+const reprovada = h => String(h.status_diretoria || '').toUpperCase() === 'STANDBY';
+
+function render() {
+  el('app').innerHTML = `<div class="card">
+    <div class="chead"><h2>Aguardando decisão (${CASOS.length})</h2></div>
+    ${CASOS.length ? `<div class="cgrid">${CASOS.map((h, i) => `<div class="ccard nok">
+      <div class="nm">${esc(h.nome)}</div>
+      ${blocoCaso(h)}
+      <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+        <button class="primary sm" onclick="decidir(${i},'HOMOLOGAR')">✓ Aprovar</button>
+        <button class="ghost sm" onclick="decidir(${i},'STANDBY')">✕ Reprovar</button>
+      </div></div>`).join('')}</div>` : '<p class="msg">Nenhum caso aguardando decisão. 🎉</p>'}
+  </div>
+  <div class="card" style="margin-top:16px">
+    <div class="chead"><div><h2>Decisões já registradas (${DEC.length})</h2>
+      <p class="dica">Os casos aprovados voltam para a equipe de homologação, que segue com o técnico. Os reprovados ficam em Standby.</p></div></div>
+    ${DEC.length ? `<div style="overflow-x:auto"><table><tr><th>Técnico</th><th>Aptidão</th><th>Decisão</th><th>Decidido em</th></tr>${DEC.map(h => `<tr>
+      <td>${esc(h.nome)}<div class="evid">CPF ${esc(fmtCpf(h.cpf))}</div></td>
+      <td>${[['Trab.', h.apto_trabalhista], ['Téc.', h.apto_tecnico], ['Patr.', h.apto_patrimonial]].map(([t, ok]) => `<span class="pill ${ok === false ? 'nok' : 'ok'}">${t}</span>`).join(' ')}
+        ${h.motivo_inapto ? `<div class="evid">${esc(h.motivo_inapto)}</div>` : ''}</td>
+      <td><span class="pill ${reprovada(h) ? 'nok' : 'ok'}">${reprovada(h) ? 'Reprovado' : 'Aprovado'}</span></td>
+      <td>${esc(fmtTs(h.decidido_em))}</td></tr>`).join('')}</table></div>`
+      : '<p class="msg">Nenhuma ainda.</p>'}
+  </div>`;
+}
+
+async function decidir(i, dec) {
+  const h = CASOS[i]; if (!h) return;
+  let motivo = '';
+  if (dec === 'STANDBY') {
+    const m = prompt('Motivo da reprovação (obrigatório). O caso ficará em Standby:\n\n' + h.nome, '');
+    if (m === null) return;
+    if (m.trim().length < 5) { alert('Informe o motivo (mínimo 5 caracteres).'); return; }
+    motivo = m.trim();
+  } else if (!confirm('Aprovar o caso de ' + h.nome + '? Ele volta para a equipe de homologação seguir com o trâmite.')) return;
+  try {
+    await vdRpc('diretoria_decidir', { p_token: tokenAdm(), p_id: String(h.id), p_decisao: dec, p_motivo: motivo });
+    await carregar();
+  } catch (e) { alert('Não foi possível registrar a decisão: ' + e.message); }
+}
+
+carregar();
+</script>
+</body>
+</html>

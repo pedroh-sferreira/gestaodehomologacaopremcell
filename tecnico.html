@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Envio de Documentação - PremCell</title>
+<style>
+:root{--brand:#233D8C;--soft:#ADB8D9;--tint:#e9edf7;--ok:#15803d;--okbg:#dcfce7;--nok:#b91c1c;--line:#e2e8f0;--txt:#1e293b;--mut:#64748b}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#eef1f8;color:var(--txt);padding-bottom:env(safe-area-inset-bottom)}
+header{background:var(--brand);color:#fff;padding:14px 16px;padding-top:calc(14px + env(safe-area-inset-top));border-bottom:4px solid var(--soft);font-weight:700;font-size:18px;display:flex;justify-content:space-between;align-items:center}
+header button{background:transparent;border:1px solid var(--soft);color:#fff;border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer}
+main{max-width:560px;margin:0 auto;padding:14px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+h2{margin:0 0 10px;font-size:16px;color:var(--brand)}
+.dado{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
+.dado:last-child{border-bottom:0}.dado span{color:var(--mut)}.dado b{text-align:right}
+.hint{color:var(--mut);font-size:13px;margin-top:8px}
+.btn{border:0;border-radius:8px;padding:12px 14px;font-size:15px;font-weight:600;background:var(--brand);color:#fff;min-height:44px;cursor:pointer;display:inline-block}
+.aviso{background:#fef3c7;color:#b45309;border-radius:8px;padding:10px;font-size:13px;margin-top:8px}
+.aviso.erro{background:#fee2e2;color:var(--nok)}
+input[type=file]{display:none}
+.membro{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:10px}
+.pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.pill{font-size:12px;padding:3px 8px;border-radius:999px;background:#fef3c7;color:#b45309}
+.pill.ok{background:var(--okbg);color:var(--ok)}
+.pill.nok{background:#fee2e2;color:var(--nok)}
+.pill.env{background:#dbeafe;color:#1d4ed8}
+#fila .aviso{margin-top:6px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header><span>Envio de Documentação</span><button id="sair" type="button">Sair</button></header>
+<main>
+  <div class="card">
+    <h2>Seus dados</h2>
+    <div id="dados"><div class="hint">Carregando...</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Enviar documentos</h2>
+    <label class="btn" style="display:block;text-align:center">Escolher arquivos
+      <input type="file" id="arq" accept=".pdf,image/*" multiple>
+    </label>
+    <div class="hint">Envie os seus documentos e os de qualquer integrante da sua equipe, tudo junto (inclusive RG e CNH). A IA identifica o tipo e de quem é cada um; se for de outra pessoa, ela entra na equipe como instalador. PDF ou imagem, até 15 MB cada. A CNH deve ser enviada somente como imagem (foto ou print), nunca em PDF.</div>
+    <div id="fila"></div>
+  </div>
+
+  <div class="card">
+    <h2>Minha equipe</h2>
+    <div id="equipe"><div class="hint">Carregando...</div></div>
+  </div>
+
+  <div id="msg" class="aviso" hidden></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="/js/supabase-adapter.js"></script>
+<script>
+const SB = Object.assign({
+  SUPABASE_URL: 'https://jedjrzxewklahainnyfn.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_lh7kWRJ3QlreuD55BVc2fw_cNiU98VK'
+}, window.APP_CONFIG || {});
+const BUCKET = 'documentos';
+const CHAVE_SESSAO = 'premcell_tecnico', LOGIN = 'loginTecnico.html';
+const DOCS = [['aso','ASO'],['os_nr01','Ordem de Serviço (NR01)'],['nr35','NR 35'],['nr10','NR 10'],['nr06','NR 06'],['ficha_epi','Ficha de EPI'],['contrato','Contrato + Anexo / Cartão CNPJ'],['rg','RG'],['cnh','CNH']];
+const AB = { aso:'ASO', os_nr01:'OS', nr35:'NR35', nr10:'NR10', nr06:'NR06', ficha_epi:'EPI', contrato:'Contrato', rg:'RG', cnh:'CNH' };
+const PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+const $ = id => document.getElementById(id);
+const dig = s => String(s || '').replace(/\D/g, '');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtCpf = c => dig(c).replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+const fmtCep = c => dig(c).replace(/(\d{5})(\d{3})/, '$1-$2');
+
+let S = null;
+try { S = JSON.parse(localStorage.getItem(CHAVE_SESSAO) || 'null'); } catch (_) {}
+function sair() { localStorage.removeItem(CHAVE_SESSAO); location.replace(LOGIN); }
+if (!S || !S.cpf || !S.token) sair();
+$('sair').onclick = sair;
+
+async function rpc(nome, args) {
+  const r = await fetch(SB.SUPABASE_URL + '/rest/v1/rpc/' + nome, {
+    method: 'POST',
+    headers: { apikey: SB.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify(args)
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((j && j.message) || 'Falha no servidor (' + r.status + ')');
+  return j;
+}
+const sessao = () => ({ p_cpf: S.cpf, p_token: S.token });
+
+function aviso(t, erro) { const m = $('msg'); m.textContent = t || ''; m.hidden = !t; m.classList.toggle('erro', !!erro); }
+
+let T = null;
+function pintarDados() {
+  $('dados').innerHTML = [
+    ['Nome', T.nome], ['CPF', fmtCpf(T.cpf)], ['CEP', fmtCep(T.cep)]
+  ].filter(([, v]) => v).map(([k, v]) => `<div class="dado"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
+}
+
+let EQ = { lider_cpf: '', membros: [], sem_dono: [] };
+
+async function carregarEquipe() {
+  EQ = await rpc('tecnico_equipe', sessao());
+  desenhar();
+}
+function rotulo(st) {
+  st = String(st || '').toUpperCase();
+  if (st === 'NOK') return ['nok', 'com problema'];
+  if (st === 'OK' || st === 'RELEVADO' || st === 'CONCLUÍDO') return ['ok', 'aprovado'];
+  return ['env', 'enviado · em análise'];
+}
+function desenhar() {
+  const eu = dig(S.cpf);
+  const cards = (EQ.membros || []).map(p => {
+    const por = {}; (p.envios || []).forEach(e => { por[e.doc_id] = e; });
+    const pills = DOCS.map(([id, nm]) => {
+      const e = por[id], r = e ? rotulo(e.status) : ['', 'pendente'];
+      return `<span class="pill ${r[0]}" title="${esc(nm + ' · ' + r[1])}">${esc(AB[id])}</span>`;
+    }).join('');
+    const papel = (dig(p.cpf) === eu ? 'Você · ' : '') + (p.lider ? 'Líder' : 'Instalador');
+    return `<div class="membro">
+      <div class="dado"><b>${esc(p.nome || 'Sem nome')}</b><span>${esc(papel)} · ${esc(fmtCpf(p.cpf))}</span></div>
+      <div class="pills">${pills}</div></div>`;
+  }).join('');
+  const sem = (EQ.sem_dono || []).map(e =>
+    `<div class="aviso erro">${esc(e.arquivo)}: não consegui identificar de quem é. Reenvie um arquivo mais legível.</div>`).join('');
+  $('equipe').innerHTML = (cards || '<div class="hint">Nenhum documento enviado ainda.</div>') + sem;
+}
+
+const cpfLiderEquipe = () => dig(EQ.lider_cpf || S.cpf);
+
+const DOCS_IA = ['aso','os_nr01','nr35','nr10','nr06','ficha_epi','contrato','rg','cnh'];
+const lerBase64 = file => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(',')[1]);
+  r.onerror = rej;
+  r.readAsDataURL(file);
+});
+const ehPdfArq = f => /pdf/i.test(f.type || '') || /\.pdf$/i.test(f.name);
+
+async function lerAssinaturasPdf(file) {
+  const nenhuma = { quantidade:0, signatarios:[] };
+  if (!file || !ehPdfArq(file)) return nenhuma;
+  try {
+    const buf = await file.arrayBuffer();
+    const txt = new TextDecoder('latin1').decode(buf);
+    const quantidade = (txt.match(/\/ByteRange\s*\[/g) || []).length;
+    const signatarios = [], vistos = new Set();
+    const re = /\/Contents\s*<([0-9A-Fa-f\s]+)>/g;
+    let m;
+    while ((m = re.exec(txt))) {
+      const hex = m[1].replace(/\s+/g, '').replace(/(00)+$/, '');
+      if (hex.length < 200) continue;
+      const bytes = new Uint8Array(hex.length >> 1);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+      const t = new TextDecoder('utf-8').decode(bytes);
+      const r2 = /([A-ZÀ-Ý][A-ZÀ-Ý' ]{4,}?):(\d{11})/g;
+      let n;
+      while ((n = r2.exec(t))) {
+        if (!vistos.has(n[2])) { vistos.add(n[2]); signatarios.push({ nome:n[1].trim(), cpf:n[2] }); }
+      }
+    }
+    return { quantidade, signatarios };
+  } catch (_) { return nenhuma; }
+}
+async function lerTextoPdf(file) {
+  if (!window.pdfjsLib || !ehPdfArq(file)) return '';
+  try {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+    let t = '';
+    for (let i = 1; i <= Math.min(pdf.numPages, 3); i++) {
+      const c = await (await pdf.getPage(i)).getTextContent();
+      t += c.items.map(x => x.str).join(' ') + '\n';
+    }
+    return t;
+  } catch (_) { return ''; }
+}
+function cpfValido(c) {
+  c = dig(c);
+  if (c.length !== 11 || /^(\d)\1+$/.test(c)) return false;
+  for (const n of [9, 10]) {
+    let s = 0; for (let i = 0; i < n; i++) s += +c[i] * (n + 1 - i);
+    if (((s * 10) % 11) % 10 !== +c[n]) return false;
+  }
+  return true;
+}
+
+function extrairCpf(txt) {
+  const variantes = [String(txt || ''), String(txt || '').replace(/\s+/g, '')];
+  const num = '\\d{3}\\s?\\.?\\s?\\d{3}\\s?\\.?\\s?\\d{3}\\s?-?\\s?\\d{2}';
+  for (const t of variantes) {
+    const rot = new RegExp('CPF[^0-9]{0,20}(' + num + ')', 'i').exec(t);
+    if (rot && cpfValido(rot[1])) return dig(rot[1]);
+  }
+  for (const t of variantes) {
+    const re = new RegExp(num, 'g');
+    let m; while ((m = re.exec(t))) if (cpfValido(m[0])) return dig(m[0]);
+  }
+  return '';
+}
+function extrairNome(txt) {
+  const m = /NOME(?:\s+E\s+SOBRENOME)?\s+([A-ZÀ-Ý' ]{5,}?)\s+(?:DOC|DATA|CPF|N[ºO°]|\d)/.exec(txt);
+  return m ? m[1].trim() : null;
+}
+
+const ROLLOUT_DOCS = ['aso','os_nr01','nr06','nr10','nr35','ficha_epi'];
+const linkStorage = c => `${SB.SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${c}`;
+const dataIso = v => /^\d{4}-\d{2}-\d{2}/.test(v || '') ? String(v).slice(0, 10) : null;
+
+
+async function pdfParaImagem(file, scale = 2.5, pagina = 1) {
+  if (!window.pdfjsLib) return null;
+  try {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+    if (pagina > pdf.numPages) return null;
+    const page = await pdf.getPage(pagina);
+    const vp = page.getViewport({ scale });
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+    await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+    return cv.toDataURL('image/jpeg', 0.9).split(',')[1];
+  } catch (_) { return null; }
+}
+
+async function analisarIA(f) {
+  let [sigs, b64] = await Promise.all([lerAssinaturasPdf(f), lerBase64(f)]);
+  let mime = f.type || 'application/pdf';
+  if (ehPdfArq(f)) {
+    const txt = await lerTextoPdf(f);
+    if (txt.length < 1500) { 
+      const img = await pdfParaImagem(f);
+      if (img) { b64 = img; mime = 'image/jpeg'; }
+    }
+  }
+  const j = await chamarApi({
+    acao: 'validar', doc_id: 'auto', nome_arquivo: f.name,
+    mime: mime, base64: b64,
+    contexto: { assinaturas_digitais: sigs, origem: 'equipe', cpf_lider: cpfLiderEquipe() }
+  });
+  return j.resultado || {};
+}
+
+async function registrarRollout(r, docId, titular, caminho) {
+  const dd = r.dados || {}, reg = r.registro || {};
+  const st = String(r.status || '').toUpperCase();
+  await rpc('rollout_registrar_doc_titular', {
+    ...sessao(),
+    p_cpf_titular: titular,
+    p_doc_id: docId,
+    p_nome: dd.nome || null,
+    p_funcao: dd.funcao || null,
+    p_cnpj: dd.cnpj || null,
+    p_carga: dd.carga_horaria_horas ? parseInt(dd.carga_horaria_horas, 10) : null,
+    p_emissao: dataIso(dd.data_emissao),
+    p_validade: dataIso(reg.validade || r.validade || dd.data_validade),
+    p_status: r.relevado ? 'RELEVADO' : (st === 'NOK' ? 'NOK' : 'OK'),
+    p_link: linkStorage(caminho),
+    p_rg: null, p_nasc: null, p_contato: null
+  });
+}
+const fila = []; let rodando = false;
+async function enviarFila(files) {
+  [...files].filter(Boolean).forEach(f => fila.push({ f }));
+  if (rodando) return;
+  rodando = true;
+  while (fila.length) { const it = fila.shift(); await enviar(it.f); }
+  rodando = false;
+}
+function linha(txt) {
+  const d = document.createElement('div'); d.className = 'aviso'; d.textContent = txt;
+  $('fila').prepend(d); return d;
+}
+
+const MSG_CNH_PDF = ': a CNH deve ser enviada como imagem (foto ou print do app, em JPG ou PNG), não em PDF. Reenvie em imagem.';
+async function removerDoStorage(caminho) {
+  try {
+    await fetch(`${SB.SUPABASE_URL}/storage/v1/object/${BUCKET}/${caminho}`, {
+      method: 'DELETE', headers: { apikey: SB.SUPABASE_ANON_KEY }
+    });
+  } catch (_) {}
+}
+
+async function enviar(f) {
+  const L = linha('Enviando ' + f.name + '...');
+  const msg = (t, erro) => { L.textContent = t; L.classList.toggle('erro', !!erro); };
+  if (f.size > 15 * 1048576) return msg(f.name + ': arquivo acima de 15 MB.', true);
+
+  const ext = (f.name.split('.').pop() || 'pdf').toLowerCase().replace(/[^a-z0-9]/g, '') || 'pdf';
+  const caminho = `${dig(S.cpf)}/auto_${Date.now()}.${ext}`;
+  const hdr = { apikey: SB.SUPABASE_ANON_KEY };
+  let subiu = false, envioId = null;
+
+  try {
+    const up = await fetch(`${SB.SUPABASE_URL}/storage/v1/object/${BUCKET}/${caminho}`, {
+      method: 'POST', body: f, headers: { ...hdr, 'Content-Type': f.type || 'application/pdf' }
+    });
+    if (!up.ok) { const j = await up.json().catch(() => null); throw new Error((j && (j.message || j.error)) || 'Falha no upload (' + up.status + ')'); }
+    subiu = true;
+    const reg = await rpc('tecnico_registrar_envio', { ...sessao(),
+      p_doc_id: 'auto', p_arquivo: f.name, p_arquivo_path: caminho });
+    envioId = reg.id;
+  } catch (e) {
+    if (/SESSAO_INVALIDA/.test(e.message)) return sair();
+    if (subiu) { try { await fetch(`${SB.SUPABASE_URL}/storage/v1/object/${BUCKET}/${caminho}`, { method: 'DELETE', headers: hdr }); } catch (_) {} }
+    return msg(f.name + ': não foi possível enviar (' + e.message + ')', true);
+  }
+
+  try {
+    msg('Analisando ' + f.name + '... (pode levar até 1 min)');
+    const r = await analisarIA(f);
+    let docId = DOCS_IA.includes(r.doc_id) ? r.doc_id : 'auto';
+    let cpfDoc = dig((r.dados || {}).cpf);
+    let nomeDoc = (r.dados || {}).nome || null;
+
+    const diag = {
+      versao: r.doc_id || '(sem doc_id)',
+      cpfIA: (r.dados || {}).cpf || (r.dados || {}).cpf_lido || null,
+      texto: -1, cpfTexto: '', cpfIA2: ''
+    };
+    if (!cpfValido(cpfDoc)) cpfDoc = '';
+    if (!cpfDoc || docId === 'auto' || docId === 'cnh' || docId === 'rg') {
+      const txt = await lerTextoPdf(f);
+      diag.texto = txt.length; diag.cpfTexto = txt ? extrairCpf(txt) : '';
+      if (txt) {
+        const cpfTxt = diag.cpfTexto;
+        if (cpfTxt && (!cpfDoc || docId === 'cnh' || docId === 'rg')) cpfDoc = cpfTxt;
+        if (!nomeDoc) nomeDoc = extrairNome(txt);
+        if (docId === 'auto') {
+          if (/HABILITA[ÇC][ÃA]O/i.test(txt)) docId = 'cnh';
+          else if (/REGISTRO GERAL|CARTEIRA DE IDENTIDADE/i.test(txt)) docId = 'rg';
+        }
+      }
+    }
+
+    if (docId === 'cnh' && ehPdfArq(f)) {
+      await removerDoStorage(caminho);
+      return msg(f.name + MSG_CNH_PDF, true);
+    }
+
+    if (!cpfDoc && ehPdfArq(f) && ['cnh', 'rg', 'auto'].includes(docId)) {
+      msg('Reanalisando ' + f.name + ' em maior resolução...');
+      for (const pg of [1, 2]) {
+        const img = await pdfParaImagem(f, 3.5, pg);
+        if (!img) break;
+        try {
+          const j = await chamarApi({
+            acao: 'validar', doc_id: 'auto', nome_arquivo: f.name,
+            mime: 'image/jpeg', base64: img,
+            contexto: { origem: 'equipe', cpf_lider: cpfLiderEquipe() }
+          });
+          const r2 = j.resultado || {}, d2 = r2.dados || {};
+          diag.cpfIA2 = d2.cpf || d2.cpf_lido || 'vazio';
+          if (cpfValido(dig(d2.cpf))) {
+            cpfDoc = dig(d2.cpf);
+            nomeDoc = nomeDoc || d2.nome || null;
+            if (docId === 'auto' && DOCS_IA.includes(r2.doc_id)) docId = r2.doc_id;
+            break;
+          }
+        } catch (_) { diag.cpfIA2 = 'erro'; }
+      }
+    }
+
+    if (docId === 'cnh' && ehPdfArq(f)) {
+      await removerDoStorage(caminho);
+      return msg(f.name + MSG_CNH_PDF, true);
+    }
+
+    const a = await rpc('tecnico_atribuir_envio', { ...sessao(),
+      p_envio_id: String(envioId), p_doc_id: docId, p_cpf_doc: cpfDoc, p_nome_doc: nomeDoc });
+
+    if (a.titular && ROLLOUT_DOCS.includes(docId)) await registrarRollout(r, docId, a.titular, caminho);
+
+    if (a.outra_equipe) msg(f.name + ': essa pessoa já está na equipe de outro líder. Fale com o homologador.', true);
+    else if (!a.titular) msg(f.name + ': enviado, mas não consegui ler o CPF do documento. Reenvie um arquivo mais legível. [diagnóstico: tipo IA=' + diag.versao + ' · CPF da IA=' + (diag.cpfIA || 'vazio') + ' · texto do PDF=' + (diag.texto < 0 ? 'não lido' : diag.texto + ' caracteres') + ' · CPF no texto=' + (diag.cpfTexto || 'não achou') + ' · CPF 2ª tentativa=' + (diag.cpfIA2 || '-') + ']', true);
+    else if (docId === 'auto') msg(f.name + ': enviado, mas não consegui identificar o tipo do documento. Reenvie um arquivo mais legível.', true);
+    else if (a.novo_instalador) msg(f.name + ': ' + (nomeDoc || 'pessoa') + ' foi adicionado(a) à equipe como instalador.');
+    else msg(f.name + ': enviado' + (a.titular === dig(S.cpf) ? '.' : ' (documento de ' + (nomeDoc || 'integrante da equipe') + ').'));
+    await carregarEquipe();
+  } catch (e) {
+    if (/SESSAO_INVALIDA/.test(e.message)) return sair();
+    msg(f.name + ': enviado, mas a identificação falhou (' + e.message + ').', true);
+  }
+}
+
+$('arq').onchange = e => { enviarFila(e.target.files); e.target.value = ''; };
+
+(async () => {
+  try {
+    T = await rpc('tecnico_perfil', sessao());
+    pintarDados();
+    await carregarEquipe();
+  } catch (e) {
+    if (/SESSAO_INVALIDA/.test(e.message)) return sair();
+    aviso('Não foi possível carregar seus dados: ' + e.message, true);
+  }
+})();
+</script>
+</body>
+</html>
