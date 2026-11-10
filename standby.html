@@ -56,17 +56,35 @@ async function carregar() {
   const token = tokenAdm();
   if (!token) { el('app').innerHTML = '<div class="card"><p class="msg">Sessão sem token. Entre novamente.</p></div>'; return; }
   el('app').innerHTML = '<div class="card"><p class="msg"><span class="spin"></span>Carregando...</p></div>';
-  try {
-    const L = await vdRpc('diretoria_listar', { p_token: token, p_status: 'STANDBY' }) || [];
-    el('app').innerHTML = `<div class="card"><div class="chead"><h2>Reprovados (${L.length})</h2></div>
-      ${L.length ? `<div class="cgrid">${L.map(h => `<div class="ccard pend">
-        <div class="nm">${esc(h.nome)}</div>
-        ${blocoCaso(h)}
-        <div class="motivo" style="margin-top:8px"><b>Decisão da diretoria (${esc(fmtTs(h.decidido_em))}):</b> ${esc(h.motivo_decisao || 'sem motivo registrado')}</div>
-      </div>`).join('')}</div>` : '<p class="msg">Nenhuma equipe em standby.</p>'}</div>`;
-  } catch (e) {
-    el('app').innerHTML = `<div class="card"><p class="msg" style="color:var(--nok)">⚠ ${esc(e.message)}</p></div>`;
-  }
+
+  const erros = [];
+  const [casos, pedidos] = await Promise.all([
+    vdRpc('diretoria_listar', { p_token: token, p_status: 'STANDBY' }).then(r => r || []).catch(e => { erros.push(e.message); return []; }),
+    vdRpc('diretoria_pedidos_standby', { p_token: token }).then(r => r || []).catch(e => { erros.push(e.message); return []; })
+  ]);
+
+  const cardCaso = h => `<div class="ccard pend">
+    <div class="nm">${esc(h.nome)}</div>
+    ${blocoCaso(h)}
+    <div class="motivo" style="margin-top:8px"><b>Decisão da diretoria (${esc(fmtTs(h.decidido_em))}):</b> ${esc(h.motivo_decisao || 'sem motivo registrado')}</div>
+  </div>`;
+
+  const cardPedido = p => {
+    const apt = (v) => v ? 'Apto' : 'Não apto';
+    return `<div class="ccard pend">
+      <div class="nm">${esc(p.equipe)}${p.recurso ? ' — ' + esc(p.recurso) : ''}</div>
+      <div class="motivo" style="margin-top:6px"><b>Aptidão:</b> trabalhista: ${apt(p.apt_trabalhista)} · técnica: ${apt(p.apt_tecnico)} · patrimonial: ${apt(p.apt_patrimonial)}</div>
+      ${p.apt_motivo ? `<div class="motivo" style="margin-top:6px"><b>Motivo da inaptidão:</b> ${esc(p.apt_motivo)}</div>` : ''}
+      ${p.apt_anexo ? `<div style="margin-top:6px"><a href="${esc(p.apt_anexo)}" target="_blank" rel="noopener">Ver anexo</a></div>` : ''}
+      <div class="motivo" style="margin-top:8px"><b>Decisão da diretoria (${esc(fmtTs(p.decidido_em))}):</b> ${esc(p.diretoria_motivo || 'sem motivo registrado')}</div>
+    </div>`;
+  };
+
+  const total = casos.length + pedidos.length;
+  el('app').innerHTML = `<div class="card"><div class="chead"><h2>Reprovados (${total})</h2></div>
+    ${erros.length ? `<p class="msg" style="color:var(--nok)">⚠ ${esc(erros.join(' | '))}</p>` : ''}
+    ${total ? `<div class="cgrid">${pedidos.map(cardPedido).join('')}${casos.map(cardCaso).join('')}</div>`
+            : '<p class="msg">Nenhuma equipe em standby.</p>'}</div>`;
 }
 carregar();
 </script>
