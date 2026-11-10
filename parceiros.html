@@ -8,36 +8,62 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="/css/cards.css">
 <script src="/js/auth.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="/js/supabase-adapter.js"></script>
 </head>
 <body>
-<header class="top">
-  <h1>Parceiros</h1>
-  <p class="desc">Cadastro e consulta de clínicas de ASO e centros de treinamento.</p>
-  <div class="acts">
-    <button type="button" class="primary" onclick="novoParceiro('ASO')">
-      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      Clínica de ASO
-    </button>
-    <button type="button" class="primary" onclick="novoParceiro('TREINAMENTO')">
-      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      Centro de treinamento
-    </button>
-    <button type="button" class="ghost" onclick="carregarParceiros()">
-      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></svg>
-      Atualizar lista
-    </button>
+<aside class="sb" id="sidebar" aria-label="Menu principal">
+  <div class="sb-top">
+    <div class="sb-brandrow">
+      <img class="sb-logo" src="/img/logo_branco.png" alt="PremCell">
+      <button type="button" class="sb-toggle" id="sbToggle" aria-label="Recolher menu" aria-expanded="true" aria-controls="sidebar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></svg>
+      </button>
+    </div>
+    <h1 class="sb-title">Parceiros</h1>
+    <p class="desc">Cadastro e consulta de clínicas de ASO e centros de treinamento.</p>
   </div>
-</header>
-<nav id="navPrincipal"></nav>
+
+  <div class="sb-nav">
+    <p class="sb-cap">Navegação</p>
+    <nav id="navPrincipal" aria-label="Páginas"></nav>
+  </div>
+
+  <div class="sb-foot">
+    <div class="sb-acts acts">
+      <button type="button" class="primary" data-tip="Clínica de ASO" onclick="novoParceiro('ASO')">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="sb-label">Clínica de ASO</span>
+      </button>
+      <button type="button" class="primary" data-tip="Centro de treinamento" onclick="novoParceiro('TREINAMENTO')">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="sb-label">Centro de treinamento</span>
+      </button>
+      <button type="button" class="ghost" data-tip="Atualizar lista" onclick="carregarParceiros()">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        <span class="sb-label">Atualizar lista</span>
+      </button>
+    </div>
+  </div>
+</aside>
+<div class="sb-overlay" id="sbOverlay"></div>
+<div class="app-main">
+  <div class="mbar">
+    <button type="button" id="sbOpen" aria-label="Abrir menu" aria-expanded="false" aria-controls="sidebar">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <span class="mbar-title">Parceiros</span>
+  </div>
+
+  <main>
+    <div id="app" aria-live="polite"></div>
+  </main>
+</div>
+
 <script src="/js/nav.js"></script>
-
-<main>
-  <div id="app" aria-live="polite"></div>
-</main>
-
 <script src="/js/parceiros.js"></script>
+<script src="/js/sidebar.js"></script>
 </body>
 </html>

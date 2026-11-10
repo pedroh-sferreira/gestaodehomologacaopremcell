@@ -18,6 +18,7 @@ h2{margin:0 0 10px;font-size:16px;color:var(--brand)}
 .btn{border:0;border-radius:8px;padding:12px 14px;font-size:15px;font-weight:600;background:var(--brand);color:#fff;min-height:44px;cursor:pointer;display:inline-block}
 .aviso{background:#fef3c7;color:#b45309;border-radius:8px;padding:10px;font-size:13px;margin-top:8px}
 .aviso.erro{background:#fee2e2;color:var(--nok)}
+.aviso.ok{background:var(--okbg);color:var(--ok)}
 input[type=file]{display:none}
 .membro{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:10px}
 .pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
@@ -25,7 +26,6 @@ input[type=file]{display:none}
 .pill.ok{background:var(--okbg);color:var(--ok)}
 .pill.nok{background:#fee2e2;color:var(--nok)}
 .pill.env{background:#dbeafe;color:#1d4ed8}
-#fila .aviso{margin-top:6px}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -43,7 +43,9 @@ input[type=file]{display:none}
       <input type="file" id="arq" accept=".pdf,image/*" multiple>
     </label>
     <div class="hint">Envie os seus documentos e os de qualquer integrante da sua equipe, tudo junto (inclusive RG e CNH). A IA identifica o tipo e de quem é cada um; se for de outra pessoa, ela entra na equipe como instalador. PDF ou imagem, até 15 MB cada. A CNH deve ser enviada somente como imagem (foto ou print), nunca em PDF.</div>
+    <div class="hint"><b>Depois que o envio for confirmado, a análise continua no servidor: você pode fechar a página ou sair do aplicativo.</b> Volte depois para ver o resultado.</div>
     <div id="fila"></div>
+    <div id="fila_srv"></div>
   </div>
 
   <div class="card">
@@ -130,15 +132,6 @@ function desenhar() {
   $('equipe').innerHTML = (cards || '<div class="hint">Nenhum documento enviado ainda.</div>') + sem;
 }
 
-const cpfLiderEquipe = () => dig(EQ.lider_cpf || S.cpf);
-
-const DOCS_IA = ['aso','os_nr01','nr35','nr10','nr06','ficha_epi','contrato','rg','cnh'];
-const lerBase64 = file => new Promise((res, rej) => {
-  const r = new FileReader();
-  r.onload = () => res(String(r.result).split(',')[1]);
-  r.onerror = rej;
-  r.readAsDataURL(file);
-});
 const ehPdfArq = f => /pdf/i.test(f.type || '') || /\.pdf$/i.test(f.name);
 
 async function lerAssinaturasPdf(file) {
@@ -188,7 +181,6 @@ function cpfValido(c) {
   }
   return true;
 }
-
 function extrairCpf(txt) {
   const variantes = [String(txt || ''), String(txt || '').replace(/\s+/g, '')];
   const num = '\\d{3}\\s?\\.?\\s?\\d{3}\\s?\\.?\\s?\\d{3}\\s?-?\\s?\\d{2}';
@@ -202,16 +194,6 @@ function extrairCpf(txt) {
   }
   return '';
 }
-function extrairNome(txt) {
-  const m = /NOME(?:\s+E\s+SOBRENOME)?\s+([A-ZÀ-Ý' ]{5,}?)\s+(?:DOC|DATA|CPF|N[ºO°]|\d)/.exec(txt);
-  return m ? m[1].trim() : null;
-}
-
-const ROLLOUT_DOCS = ['aso','os_nr01','nr06','nr10','nr35','ficha_epi'];
-const linkStorage = c => `${SB.SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${c}`;
-const dataIso = v => /^\d{4}-\d{2}-\d{2}/.test(v || '') ? String(v).slice(0, 10) : null;
-
-
 async function pdfParaImagem(file, scale = 2.5, pagina = 1) {
   if (!window.pdfjsLib) return null;
   try {
@@ -227,42 +209,46 @@ async function pdfParaImagem(file, scale = 2.5, pagina = 1) {
   } catch (_) { return null; }
 }
 
-async function analisarIA(f) {
-  let [sigs, b64] = await Promise.all([lerAssinaturasPdf(f), lerBase64(f)]);
-  let mime = f.type || 'application/pdf';
-  if (ehPdfArq(f)) {
-    const txt = await lerTextoPdf(f);
-    if (txt.length < 1500) { 
-      const img = await pdfParaImagem(f);
-      if (img) { b64 = img; mime = 'image/jpeg'; }
-    }
-  }
-  const j = await chamarApi({
-    acao: 'validar', doc_id: 'auto', nome_arquivo: f.name,
-    mime: mime, base64: b64,
-    contexto: { assinaturas_digitais: sigs, origem: 'equipe', cpf_lider: cpfLiderEquipe() }
+const hdr = { apikey: SB.SUPABASE_ANON_KEY };
+let seq = 0;
+async function subirBlob(blob, caminho, tipo) {
+  const up = await fetch(`${SB.SUPABASE_URL}/storage/v1/object/${BUCKET}/${caminho}`, {
+    method: 'POST', body: blob, headers: { ...hdr, 'Content-Type': tipo }
   });
-  return j.resultado || {};
+  if (!up.ok) { const j = await up.json().catch(() => null); throw new Error((j && (j.message || j.error)) || 'Falha no upload (' + up.status + ')'); }
+  return caminho;
+}
+async function subirImagem(b64) {
+  const blob = await (await fetch('data:image/jpeg;base64,' + b64)).blob();
+  return subirBlob(blob, `${dig(S.cpf)}/tmp_${Date.now()}_${++seq}.jpg`, 'image/jpeg');
+}
+async function removerDoStorage(caminho) {
+  try { await fetch(`${SB.SUPABASE_URL}/storage/v1/object/${BUCKET}/${caminho}`, { method: 'DELETE', headers: hdr }); } catch (_) {}
 }
 
-async function registrarRollout(r, docId, titular, caminho) {
-  const dd = r.dados || {}, reg = r.registro || {};
-  const st = String(r.status || '').toUpperCase();
-  await rpc('rollout_registrar_doc_titular', {
-    ...sessao(),
-    p_cpf_titular: titular,
-    p_doc_id: docId,
-    p_nome: dd.nome || null,
-    p_funcao: dd.funcao || null,
-    p_cnpj: dd.cnpj || null,
-    p_carga: dd.carga_horaria_horas ? parseInt(dd.carga_horaria_horas, 10) : null,
-    p_emissao: dataIso(dd.data_emissao),
-    p_validade: dataIso(reg.validade || r.validade || dd.data_validade),
-    p_status: r.relevado ? 'RELEVADO' : (st === 'NOK' ? 'NOK' : 'OK'),
-    p_link: linkStorage(caminho),
-    p_rg: null, p_nasc: null, p_contato: null
-  });
+
+async function prepararIA(f, caminho) {
+  const pdf = ehPdfArq(f);
+  const [sigs, txt] = await Promise.all([lerAssinaturasPdf(f), pdf ? lerTextoPdf(f) : Promise.resolve('')]);
+  let iaPath = caminho, iaMime = f.type || 'application/pdf';
+  const temporarios = [], fallbacks = [];
+  try {
+    if (pdf && txt.length < 1500) {                    
+      const img = await pdfParaImagem(f);
+      if (img) { iaPath = await subirImagem(img); iaMime = 'image/jpeg'; temporarios.push(iaPath); }
+    }
+    if (pdf && !extrairCpf(txt)) {                    
+      for (const pg of [1, 2]) {
+        const img = await pdfParaImagem(f, 3.5, pg);
+        if (!img) break;
+        const p = await subirImagem(img); fallbacks.push(p); temporarios.push(p);
+      }
+    }
+  } catch (e) { await Promise.all(temporarios.map(removerDoStorage)); throw e; }
+  return { iaPath, iaMime, temporarios,
+    extras: { sigs, texto: txt.slice(0, 20000), eh_pdf: pdf, fallbacks, temporarios } };
 }
+
 const fila = []; let rodando = false;
 async function enviarFila(files) {
   [...files].filter(Boolean).forEach(f => fila.push({ f }));
@@ -276,15 +262,6 @@ function linha(txt) {
   $('fila').prepend(d); return d;
 }
 
-const MSG_CNH_PDF = ': a CNH deve ser enviada como imagem (foto ou print do app, em JPG ou PNG), não em PDF. Reenvie em imagem.';
-async function removerDoStorage(caminho) {
-  try {
-    await fetch(`${SB.SUPABASE_URL}/storage/v1/object/${BUCKET}/${caminho}`, {
-      method: 'DELETE', headers: { apikey: SB.SUPABASE_ANON_KEY }
-    });
-  } catch (_) {}
-}
-
 async function enviar(f) {
   const L = linha('Enviando ' + f.name + '...');
   const msg = (t, erro) => { L.textContent = t; L.classList.toggle('erro', !!erro); };
@@ -292,108 +269,69 @@ async function enviar(f) {
 
   const ext = (f.name.split('.').pop() || 'pdf').toLowerCase().replace(/[^a-z0-9]/g, '') || 'pdf';
   const caminho = `${dig(S.cpf)}/auto_${Date.now()}.${ext}`;
-  const hdr = { apikey: SB.SUPABASE_ANON_KEY };
-  let subiu = false, envioId = null;
+  let subiu = false, envioId = null, prep = null;
 
   try {
-    const up = await fetch(`${SB.SUPABASE_URL}/storage/v1/object/${BUCKET}/${caminho}`, {
-      method: 'POST', body: f, headers: { ...hdr, 'Content-Type': f.type || 'application/pdf' }
-    });
-    if (!up.ok) { const j = await up.json().catch(() => null); throw new Error((j && (j.message || j.error)) || 'Falha no upload (' + up.status + ')'); }
+    await subirBlob(f, caminho, f.type || 'application/pdf');
     subiu = true;
     const reg = await rpc('tecnico_registrar_envio', { ...sessao(),
       p_doc_id: 'auto', p_arquivo: f.name, p_arquivo_path: caminho });
     envioId = reg.id;
+
+    msg('Preparando ' + f.name + '... (não feche a página até aparecer "enviado")');
+    prep = await prepararIA(f, caminho);
+    await rpc('tecnico_enfileirar', { ...sessao(),
+      p_envio_id: String(envioId), p_arquivo: f.name, p_arquivo_path: caminho,
+      p_mime: f.type || 'application/pdf', p_ia_path: prep.iaPath, p_ia_mime: prep.iaMime, p_extras: prep.extras });
   } catch (e) {
     if (/SESSAO_INVALIDA/.test(e.message)) return sair();
-    if (subiu) { try { await fetch(`${SB.SUPABASE_URL}/storage/v1/object/${BUCKET}/${caminho}`, { method: 'DELETE', headers: hdr }); } catch (_) {} }
+    if (prep) await Promise.all(prep.temporarios.map(removerDoStorage));
+    if (subiu) await removerDoStorage(caminho);
     return msg(f.name + ': não foi possível enviar (' + e.message + ')', true);
   }
 
-  try {
-    msg('Analisando ' + f.name + '... (pode levar até 1 min)');
-    const r = await analisarIA(f);
-    let docId = DOCS_IA.includes(r.doc_id) ? r.doc_id : 'auto';
-    let cpfDoc = dig((r.dados || {}).cpf);
-    let nomeDoc = (r.dados || {}).nome || null;
+  L.remove();               
+  atualizarFila();
+}
 
-    const diag = {
-      versao: r.doc_id || '(sem doc_id)',
-      cpfIA: (r.dados || {}).cpf || (r.dados || {}).cpf_lido || null,
-      texto: -1, cpfTexto: '', cpfIA2: ''
-    };
-    if (!cpfValido(cpfDoc)) cpfDoc = '';
-    if (!cpfDoc || docId === 'auto' || docId === 'cnh' || docId === 'rg') {
-      const txt = await lerTextoPdf(f);
-      diag.texto = txt.length; diag.cpfTexto = txt ? extrairCpf(txt) : '';
-      if (txt) {
-        const cpfTxt = diag.cpfTexto;
-        if (cpfTxt && (!cpfDoc || docId === 'cnh' || docId === 'rg')) cpfDoc = cpfTxt;
-        if (!nomeDoc) nomeDoc = extrairNome(txt);
-        if (docId === 'auto') {
-          if (/HABILITA[ÇC][ÃA]O/i.test(txt)) docId = 'cnh';
-          else if (/REGISTRO GERAL|CARTEIRA DE IDENTIDADE/i.test(txt)) docId = 'rg';
-        }
-      }
-    }
-
-    if (docId === 'cnh' && ehPdfArq(f)) {
-      await removerDoStorage(caminho);
-      return msg(f.name + MSG_CNH_PDF, true);
-    }
-
-    if (!cpfDoc && ehPdfArq(f) && ['cnh', 'rg', 'auto'].includes(docId)) {
-      msg('Reanalisando ' + f.name + ' em maior resolução...');
-      for (const pg of [1, 2]) {
-        const img = await pdfParaImagem(f, 3.5, pg);
-        if (!img) break;
-        try {
-          const j = await chamarApi({
-            acao: 'validar', doc_id: 'auto', nome_arquivo: f.name,
-            mime: 'image/jpeg', base64: img,
-            contexto: { origem: 'equipe', cpf_lider: cpfLiderEquipe() }
-          });
-          const r2 = j.resultado || {}, d2 = r2.dados || {};
-          diag.cpfIA2 = d2.cpf || d2.cpf_lido || 'vazio';
-          if (cpfValido(dig(d2.cpf))) {
-            cpfDoc = dig(d2.cpf);
-            nomeDoc = nomeDoc || d2.nome || null;
-            if (docId === 'auto' && DOCS_IA.includes(r2.doc_id)) docId = r2.doc_id;
-            break;
-          }
-        } catch (_) { diag.cpfIA2 = 'erro'; }
-      }
-    }
-
-    if (docId === 'cnh' && ehPdfArq(f)) {
-      await removerDoStorage(caminho);
-      return msg(f.name + MSG_CNH_PDF, true);
-    }
-
-    const a = await rpc('tecnico_atribuir_envio', { ...sessao(),
-      p_envio_id: String(envioId), p_doc_id: docId, p_cpf_doc: cpfDoc, p_nome_doc: nomeDoc });
-
-    if (a.titular && ROLLOUT_DOCS.includes(docId)) await registrarRollout(r, docId, a.titular, caminho);
-
-    if (a.outra_equipe) msg(f.name + ': essa pessoa já está na equipe de outro líder. Fale com o homologador.', true);
-    else if (!a.titular) msg(f.name + ': enviado, mas não consegui ler o CPF do documento. Reenvie um arquivo mais legível. [diagnóstico: tipo IA=' + diag.versao + ' · CPF da IA=' + (diag.cpfIA || 'vazio') + ' · texto do PDF=' + (diag.texto < 0 ? 'não lido' : diag.texto + ' caracteres') + ' · CPF no texto=' + (diag.cpfTexto || 'não achou') + ' · CPF 2ª tentativa=' + (diag.cpfIA2 || '-') + ']', true);
-    else if (docId === 'auto') msg(f.name + ': enviado, mas não consegui identificar o tipo do documento. Reenvie um arquivo mais legível.', true);
-    else if (a.novo_instalador) msg(f.name + ': ' + (nomeDoc || 'pessoa') + ' foi adicionado(a) à equipe como instalador.');
-    else msg(f.name + ': enviado' + (a.titular === dig(S.cpf) ? '.' : ' (documento de ' + (nomeDoc || 'integrante da equipe') + ').'));
-    await carregarEquipe();
-  } catch (e) {
+let pollTimer = null, ultimoConcl = -1, tinhaAndamento = false;
+async function atualizarFila() {
+  clearTimeout(pollTimer);
+  let rows = [];
+  try { rows = await rpc('tecnico_fila', sessao()); }
+  catch (e) {
     if (/SESSAO_INVALIDA/.test(e.message)) return sair();
-    msg(f.name + ': enviado, mas a identificação falhou (' + e.message + ').', true);
+    pollTimer = setTimeout(atualizarFila, 8000); return;
   }
+  const emAndamento = rows.filter(r => r.estado !== 'concluido' && r.estado !== 'erro');
+  const concl = rows.length - emAndamento.length;
+  $('fila_srv').innerHTML = rows.map(r => {
+    let cls = 'aviso', t;
+    if (r.estado === 'concluido' || r.estado === 'erro') {
+      const erro = r.mensagem_erro || r.estado === 'erro';
+      t = r.mensagem || (r.estado === 'erro' ? r.arquivo + ': falha na análise (' + (r.erro || 'erro') + ').' : r.arquivo + ': analisado.');
+      cls += erro ? ' erro' : ' ok';
+    } else {
+      t = r.arquivo + (r.estado === 'pendente' ? ': na fila de análise...' : ': analisando...') + (r.erro ? ' (tentando novamente)' : '');
+    }
+    return `<div class="${cls}">${esc(t)}</div>`;
+  }).join('');
+  if ((tinhaAndamento && !emAndamento.length) || (ultimoConcl >= 0 && concl !== ultimoConcl)) {
+    try { await carregarEquipe(); } catch (_) {}
+  }
+  ultimoConcl = concl; tinhaAndamento = emAndamento.length > 0;
+  if (tinhaAndamento) pollTimer = setTimeout(atualizarFila, 4000);
 }
 
 $('arq').onchange = e => { enviarFila(e.target.files); e.target.value = ''; };
+window.addEventListener('beforeunload', e => { if (rodando) { e.preventDefault(); e.returnValue = ''; } });
 
 (async () => {
   try {
     T = await rpc('tecnico_perfil', sessao());
     pintarDados();
     await carregarEquipe();
+    atualizarFila();       
   } catch (e) {
     if (/SESSAO_INVALIDA/.test(e.message)) return sair();
     aviso('Não foi possível carregar seus dados: ' + e.message, true);

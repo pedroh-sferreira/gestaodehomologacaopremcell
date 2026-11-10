@@ -8,31 +8,68 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="/css/cards.css">
 <script src="/js/auth.js"></script>
 </head>
 <body>
-<header class="top">
-  <h1>Análise de homologações</h1>
-  <p class="desc">Casos com algum item Inapto aguardando decisão: Aprovar ou Reprovar.</p>
-  <div class="acts">
-    <button type="button" class="ghost" onclick="carregar()">Atualizar</button>
+<aside class="sb" id="sidebar" aria-label="Menu principal">
+  <div class="sb-top">
+    <div class="sb-brandrow">
+      <img class="sb-logo" src="/img/logo_branco.png" alt="PremCell">
+      <button type="button" class="sb-toggle" id="sbToggle" aria-label="Recolher menu" aria-expanded="true" aria-controls="sidebar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></svg>
+      </button>
+    </div>
+    <h1 class="sb-title">Análise de homologações</h1>
+    <p class="desc">Casos com algum item Inapto aguardando decisão: Aprovar ou Reprovar.</p>
   </div>
-</header>
-<nav id="navPrincipal"></nav>
+
+  <div class="sb-nav">
+    <p class="sb-cap">Navegação</p>
+    <nav id="navPrincipal" aria-label="Páginas"></nav>
+  </div>
+  <div class="sb-foot">
+    <div class="sb-acts acts">
+      <button type="button" class="ghost" data-tip="Atualizar" onclick="carregar()">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        <span class="sb-label">Atualizar</span>
+      </button>
+    </div>
+  </div>
+</aside>
+<div class="sb-overlay" id="sbOverlay"></div>
 <script src="/js/nav.js"></script>
-<main><div id="app" aria-live="polite"></div></main>
+<div class="app-main">
+  <div class="mbar">
+    <button type="button" id="sbOpen" aria-label="Abrir menu" aria-expanded="false" aria-controls="sidebar">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <span class="mbar-title">Análise de homologações</span>
+  </div>
+
+  <main><div id="app" aria-live="polite"></div></main>
+</div>
+
 <script src="/js/diretoria-comum.js"></script>
+<script src="/js/sidebar.js"></script>
 <script>
-let CASOS = [], DEC = [];
+let CASOS = [], DEC = [], PCASOS = [], PDEC = [], PED_ERRO = '';
+
+const lista = L => (L && !Array.isArray(L)) ? (Array.isArray(L.data) ? L.data : (Array.isArray(L.rows) ? L.rows : [])) : (L || []);
 
 async function carregar() {
   const token = tokenAdm();
   if (!token) { el('app').innerHTML = '<div class="card"><p class="msg">Sessão sem token. Entre novamente.</p></div>'; return; }
   el('app').innerHTML = '<div class="card"><p class="msg"><span class="spin"></span>Carregando...</p></div>';
   try {
-    [CASOS, DEC] = await Promise.all([
+    PED_ERRO = '';
+    const peds = s => vdRpc('diretoria_pedidos_listar', { p_token: token, p_status: s })
+      .then(lista).catch(e => { PED_ERRO = e.message; return []; });
+    [CASOS, DEC, PCASOS, PDEC] = await Promise.all([
       vdRpc('diretoria_listar', { p_token: token, p_status: 'AGUARDANDO' }),
-      vdRpc('diretoria_listar', { p_token: token, p_status: 'DECIDIDAS' })
+      vdRpc('diretoria_listar', { p_token: token, p_status: 'DECIDIDAS' }),
+      peds('AGUARDANDO'),
+      peds('DECIDIDAS')
     ]);
     render();
   } catch (e) {
@@ -41,10 +78,28 @@ async function carregar() {
 }
 
 const reprovada = h => String(h.status_diretoria || '').toUpperCase() === 'STANDBY';
+const aptPills = p => [['Trab.', p.apt_trabalhista], ['Téc.', p.apt_tecnico], ['Patr.', p.apt_patrimonial]]
+  .map(([t, ok]) => `<span class="pill ${ok === false ? 'nok' : 'ok'}">${t}</span>`).join(' ');
 
 function render() {
-  el('app').innerHTML = `<div class="card">
-    <div class="chead"><h2>Aguardando decisão (${CASOS.length})</h2></div>
+  el('app').innerHTML = `
+  ${PED_ERRO ? `<div class="card"><p class="msg" style="color:var(--nok)">⚠ Equipes novas não carregaram: ${esc(PED_ERRO)}</p></div>` : ''}
+  <div class="card">
+    <div class="chead"><h2>Equipes aguardando decisão (${PCASOS.length})</h2></div>
+    ${PCASOS.length ? `<div class="cgrid">${PCASOS.map((p, i) => `<div class="ccard nok">
+      <div class="nm">${esc(p.equipe)}</div>
+      <div class="sub">Recurso: ${esc(p.recurso)}</div>
+      <div style="margin-top:8px">${aptPills(p)}</div>
+      ${p.apt_motivo ? `<div class="evid" style="margin-top:6px">Motivo: ${esc(p.apt_motivo)}</div>` : ''}
+      ${p.apt_anexo ? `<div class="evid"><a href="${esc(p.apt_anexo)}" target="_blank" rel="noopener">Ver anexo</a></div>` : ''}
+      <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+        <button class="primary sm" onclick="decidirPedido(${i},'HOMOLOGAR')">✓ Aprovar</button>
+        <button class="ghost sm" onclick="decidirPedido(${i},'STANDBY')">✕ Reprovar</button>
+      </div></div>`).join('')}</div>` : '<p class="msg">Nenhuma equipe aguardando decisão. 🎉</p>'}
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="chead"><h2>Aguardando decisão por CPF (${CASOS.length})</h2></div>
     ${CASOS.length ? `<div class="cgrid">${CASOS.map((h, i) => `<div class="ccard nok">
       <div class="nm">${esc(h.nome)}</div>
       ${blocoCaso(h)}
@@ -53,30 +108,51 @@ function render() {
         <button class="ghost sm" onclick="decidir(${i},'STANDBY')">✕ Reprovar</button>
       </div></div>`).join('')}</div>` : '<p class="msg">Nenhum caso aguardando decisão. 🎉</p>'}
   </div>
+
   <div class="card" style="margin-top:16px">
-    <div class="chead"><div><h2>Decisões já registradas (${DEC.length})</h2>
+    <div class="chead"><div><h2>Decisões já registradas (${PDEC.length + DEC.length})</h2>
       <p class="dica">Os casos aprovados voltam para a equipe de homologação, que segue com o técnico. Os reprovados ficam em Standby.</p></div></div>
-    ${DEC.length ? `<div style="overflow-x:auto"><table><tr><th>Técnico</th><th>Aptidão</th><th>Decisão</th><th>Decidido em</th></tr>${DEC.map(h => `<tr>
-      <td>${esc(h.nome)}<div class="evid">CPF ${esc(fmtCpf(h.cpf))}</div></td>
-      <td>${[['Trab.', h.apto_trabalhista], ['Téc.', h.apto_tecnico], ['Patr.', h.apto_patrimonial]].map(([t, ok]) => `<span class="pill ${ok === false ? 'nok' : 'ok'}">${t}</span>`).join(' ')}
-        ${h.motivo_inapto ? `<div class="evid">${esc(h.motivo_inapto)}</div>` : ''}</td>
-      <td><span class="pill ${reprovada(h) ? 'nok' : 'ok'}">${reprovada(h) ? 'Reprovado' : 'Aprovado'}</span></td>
-      <td>${esc(fmtTs(h.decidido_em))}</td></tr>`).join('')}</table></div>`
-      : '<p class="msg">Nenhuma ainda.</p>'}
+    ${(PDEC.length || DEC.length) ? `<div style="overflow-x:auto"><table><tr><th>Equipe / Técnico</th><th>Aptidão</th><th>Decisão</th><th>Decidido em</th></tr>
+      ${PDEC.map(p => `<tr>
+        <td>👥 ${esc(p.equipe)}<div class="evid">Recurso: ${esc(p.recurso)}</div></td>
+        <td>${aptPills(p)}${p.apt_motivo ? `<div class="evid">${esc(p.apt_motivo)}</div>` : ''}</td>
+        <td><span class="pill ${reprovada(p) ? 'nok' : 'ok'}">${reprovada(p) ? 'Reprovado' : 'Aprovado'}</span>
+          ${p.diretoria_motivo ? `<div class="evid">${esc(p.diretoria_motivo)}</div>` : ''}</td>
+        <td>${esc(fmtTs(p.decidido_em))}</td></tr>`).join('')}
+      ${DEC.map(h => `<tr>
+        <td>${esc(h.nome)}<div class="evid">CPF ${esc(fmtCpf(h.cpf))}</div></td>
+        <td>${[['Trab.', h.apto_trabalhista], ['Téc.', h.apto_tecnico], ['Patr.', h.apto_patrimonial]].map(([t, ok]) => `<span class="pill ${ok === false ? 'nok' : 'ok'}">${t}</span>`).join(' ')}
+          ${h.motivo_inapto ? `<div class="evid">${esc(h.motivo_inapto)}</div>` : ''}</td>
+        <td><span class="pill ${reprovada(h) ? 'nok' : 'ok'}">${reprovada(h) ? 'Reprovado' : 'Aprovado'}</span></td>
+        <td>${esc(fmtTs(h.decidido_em))}</td></tr>`).join('')}
+      </table></div>` : '<p class="msg">Nenhuma ainda.</p>'}
   </div>`;
+}
+
+function pedirDecisao(dec, nome) {
+  if (dec === 'STANDBY') {
+    const m = prompt('Motivo da reprovação (obrigatório). O caso ficará em Standby:\n\n' + nome, '');
+    if (m === null) return null;
+    if (m.trim().length < 5) { alert('Informe o motivo (mínimo 5 caracteres).'); return null; }
+    return m.trim();
+  }
+  return confirm('Aprovar o caso de ' + nome + '? Ele volta para a equipe de homologação seguir com o trâmite.') ? '' : null;
 }
 
 async function decidir(i, dec) {
   const h = CASOS[i]; if (!h) return;
-  let motivo = '';
-  if (dec === 'STANDBY') {
-    const m = prompt('Motivo da reprovação (obrigatório). O caso ficará em Standby:\n\n' + h.nome, '');
-    if (m === null) return;
-    if (m.trim().length < 5) { alert('Informe o motivo (mínimo 5 caracteres).'); return; }
-    motivo = m.trim();
-  } else if (!confirm('Aprovar o caso de ' + h.nome + '? Ele volta para a equipe de homologação seguir com o trâmite.')) return;
+  const motivo = pedirDecisao(dec, h.nome); if (motivo === null) return;
   try {
     await vdRpc('diretoria_decidir', { p_token: tokenAdm(), p_id: String(h.id), p_decisao: dec, p_motivo: motivo });
+    await carregar();
+  } catch (e) { alert('Não foi possível registrar a decisão: ' + e.message); }
+}
+
+async function decidirPedido(i, dec) {
+  const p = PCASOS[i]; if (!p) return;
+  const motivo = pedirDecisao(dec, p.equipe + ' (' + p.recurso + ')'); if (motivo === null) return;
+  try {
+    await vdRpc('diretoria_pedido_decidir', { p_token: tokenAdm(), p_id: String(p.id), p_decisao: dec, p_motivo: motivo });
     await carregar();
   } catch (e) { alert('Não foi possível registrar a decisão: ' + e.message); }
 }

@@ -85,6 +85,8 @@ const QS = new URLSearchParams(location.search);
 const QCPF = dig(QS.get('cpf'));
 const QNOME = (QS.get('nome') || '').trim().replace(/\s+/g, ' ');
 const VEIO_DO_LINK = QCPF.length === 11;
+const QHOM = (QS.get('homologacao') || '').trim();
+let HOM_LIBERADA = !QHOM;
 
 async function rpc(nome, args) {
   const r = await fetch(SB.SUPABASE_URL + '/rest/v1/rpc/' + nome, {
@@ -106,6 +108,7 @@ let endereco = null, cepReq = 0, cepCtrl = null;
   try {
     const s = JSON.parse(localStorage.getItem(CHAVE_SESSAO) || 'null');
     if (!s || !s.cpf || !s.token) return;
+        if (QHOM) return;
     if (VEIO_DO_LINK && dig(s.cpf) !== QCPF) return;
     const p = await rpc('tecnico_perfil', { p_cpf: s.cpf, p_token: s.token });
     if (p && p.cpf) location.replace(DESTINO);
@@ -195,7 +198,7 @@ $('cep').addEventListener('input', async e => {
   }
   atualizarCad();
 });
-function atualizarCad() { $('btnCad').disabled = !(nomeValido() && validarCpf() && endereco); }
+function atualizarCad() { $('btnCad').disabled = !(nomeValido() && validarCpf() && endereco && HOM_LIBERADA); }
 
 $('btnCad').onclick = async () => {
   if (!(nomeValido() && validarCpf() && endereco)) return;
@@ -212,6 +215,7 @@ $('btnCad').onclick = async () => {
       p_senha: null 
     });
     try { await rpc('homologacao_cadastro_tecnico', { p_cpf: dig($('cpf').value) }); } catch (_) {}
+        if (QHOM) { try { await rpc('homologacao_pedido_vincular', { p_id: QHOM, p_cpf: dig($('cpf').value) }); } catch (_) {} }
     abrirSessao(s);
   } catch (e) {
     if (/CPF_JA_CADASTRADO/.test(e.message)) { aba(false); $('lCpf').value = $('cpf').value; atualizarLogin(); aviso('Este CPF já está cadastrado. Clique em "Entrar".', true); }
@@ -230,6 +234,20 @@ if (VEIO_DO_LINK || QNOME) {
   }
   atualizarCad();
   setTimeout(() => $('cep').focus(), 100);
+}
+if (QHOM) {
+  aba(true);
+  $('btnCad').disabled = true;
+  aviso('Verificando liberação...');
+  rpc('homologacao_pedido_status', { p_id: QHOM }).then(s => {
+    if (s && s.status === 'LIBERADA') {
+      HOM_LIBERADA = true; aviso('');
+      if (s.recurso && !$('nome').value) $('nome').value = s.recurso;
+      atualizarCad();
+    } else {
+      aviso('O envio de documentos ainda não foi liberado pela equipe de homologação. Aguarde o aviso e abra o link novamente.', true);
+    }
+  }).catch(e => aviso('Não foi possível verificar a liberação: ' + e.message, true));
 }
 </script>
 </body>

@@ -47,7 +47,56 @@ function lerEqLocais() {
   try { const a = JSON.parse(localStorage.getItem(LS_EQ) || '[]'); return Array.isArray(a) ? a : []; } catch (_) { return []; }
 }
 let EQ_LOCAIS = lerEqLocais();
-function salvarEqLocais() { try { localStorage.setItem(LS_EQ, JSON.stringify(EQ_LOCAIS)); } catch (_) {} }
+/* Equipes de homologação: a fonte da verdade é o Supabase (tabela hm_equipes).
+   O localStorage é só cache offline. */
+let _eqSnap = {};                       // key -> JSON já gravado no servidor
+let _eqTimer = null, _eqPushando = false;
+const _eqExcluidas = new Set();
+function salvarEqLocais() {
+  try { localStorage.setItem(LS_EQ, JSON.stringify(EQ_LOCAIS)); } catch (_) {}
+  clearTimeout(_eqTimer);
+  _eqTimer = setTimeout(enviarEqServidor, 400);
+}
+async function enviarEqServidor() {
+  const token = tokenAdm();
+  if (!token || _eqPushando) { if (token) _eqTimer = setTimeout(enviarEqServidor, 800); return; }
+  _eqPushando = true;
+  try {
+    for (const q of EQ_LOCAIS.slice()) {
+      const js = JSON.stringify(q);
+      if (_eqSnap[q.key] === js) continue;
+      await vdRpc('hm_equipe_salvar', { p_token: token, p_key: q.key, p_dados: q });
+      _eqSnap[q.key] = js;
+    }
+  } catch (e) {
+    toastDl('⚠ Não foi possível salvar a equipe no servidor: ' + e.message, true);
+    _eqTimer = setTimeout(enviarEqServidor, 5000);
+  }
+  _eqPushando = false;
+}
+async function carregarEqServidor() {
+  const token = tokenAdm();
+  if (!token) throw new Error('sessão sem token');
+  let L = await vdRpc('hm_equipes_listar', { p_token: token });
+  if (L && !Array.isArray(L)) L = Array.isArray(L.data) ? L.data : [];
+  const doServidor = (L || []).map(r => r.dados).filter(q => q && q.key);
+  const chaves = new Set(doServidor.map(q => q.key));
+  doServidor.forEach(sq => {
+    const loc = EQ_LOCAIS.find(x => x.key === sq.key);
+    const js = JSON.stringify(sq);
+    if (!loc) { EQ_LOCAIS.push(sq); _eqSnap[sq.key] = js; return; }
+    const sujo = _eqSnap[sq.key] !== undefined && JSON.stringify(loc) !== _eqSnap[sq.key];  
+    if (!sujo) {                         
+      Object.keys(loc).forEach(k => delete loc[k]);
+      Object.assign(loc, sq);
+      _eqSnap[sq.key] = js;
+    }
+  });
+  EQ_LOCAIS = EQ_LOCAIS.filter(q => chaves.has(q.key) || _eqSnap[q.key] === undefined);
+  EQ_LOCAIS = EQ_LOCAIS.filter(q => !_eqExcluidas.has(q.key));
+  try { localStorage.setItem(LS_EQ, JSON.stringify(EQ_LOCAIS)); } catch (_) {}
+  if (EQ_LOCAIS.some(q => _eqSnap[q.key] === undefined)) enviarEqServidor();
+}
 
 const eqNome = e => (e && (e.nome || e.lider)) || '';
 const eqTitulo = e => { const n = eqNome(e); return /^equipe\b/i.test(n) ? n : 'Equipe ' + n; };
@@ -127,7 +176,13 @@ function renomearEquipeLocal(key, nome) {
   q.nome = String(nome || '').trim() || q.nome; salvarEqLocais(); recarregarEquipes();
 }
 function excluirEquipeLocal(key) {
-  EQ_LOCAIS = EQ_LOCAIS.filter(x => x.key !== key); salvarEqLocais(); recarregarEquipes();
+  _eqExcluidas.add(key);
+  EQ_LOCAIS = EQ_LOCAIS.filter(x => x.key !== key); delete _eqSnap[key];
+  try { localStorage.setItem(LS_EQ, JSON.stringify(EQ_LOCAIS)); } catch (_) {}
+  recarregarEquipes();
+  const token = tokenAdm();
+  if (token) vdRpc('hm_equipe_excluir', { p_token: token, p_key: key })
+    .catch(e => toastDl('⚠ Não foi possível excluir no servidor: ' + e.message, true));
 }
 
 function lerBase64(file) {
@@ -269,6 +324,7 @@ async function carregarHist() {
   if (!tinha) { carga = 'carregando'; if (view !== 'envio') render(); }
   let avisoPessoais = '';
   try {
+    await carregarEqServidor().catch(e => console.warn('Equipes de homologação:', e.message));
     const [j, pess, eqs, hom] = await Promise.all([
       chamarApi({ acao:'listar', limite:1000 }),
       buscarDocsPessoais().catch(e => {
@@ -352,6 +408,7 @@ function render() {
   else if (view === 'envio') renderEnvio();
   else renderHome();
   window.scrollTo({ top:0 });
+  painelFila();
 }
 function irHome() { view = 'home'; cur = null; curEq = null; render(); }
 function voltarColab() { if (curEq && EQUIPES.some(e => e.key === curEq)) { view = 'equipe'; cur = null; render(); } else irHome(); }
@@ -562,15 +619,110 @@ function renderColab() {
   </div>`;
 }
 
-let _mUrl = null;
-function abrirModalUrl(tit, url, img, revogar) {
-  _mUrl = revogar ? url : null;
-  el('modalTit').textContent = tit;
-  el('modalBody').innerHTML = img ? `<img src="${url}" alt="documento">` : `<iframe src="${url}" title="documento"></iframe>`;
-  el('modal').classList.remove('hidden');
+let _mUrl = null, _vm = null, _vmZ = 70;
+
+function vmEnsure() {
+  if (_vm) return _vm;
+  const d = document.createElement('div');
+  d.id = 'vmodal'; d.className = 'vm';
+  d.setAttribute('role', 'dialog'); d.setAttribute('aria-modal', 'true');
+  d.innerHTML = `<div class="vm-box">
+    <div class="vm-head">
+      <div class="vm-txt"><div class="vm-tit"></div><div class="vm-sub"></div></div>
+      <div class="vm-tools">
+        <span id="vmZoomBox" style="display:none;align-items:center;gap:4px">
+          <button class="vm-btn" onclick="vmZoom(-15)" title="Diminuir">−</button>
+          <span class="vm-zoomlbl" id="vmZ">70%</span>
+          <button class="vm-btn" onclick="vmZoom(15)" title="Aumentar">+</button>
+          <button class="vm-btn" onclick="vmZoom(0)" title="Ajustar">Ajustar</button>
+        </span>
+        <a class="vm-btn" id="vmDl" title="Baixar">⬇ <span class="t">Baixar</span></a>
+        <a class="vm-btn" id="vmNew" target="_blank" rel="noopener" title="Abrir em nova aba">↗ <span class="t">Nova aba</span></a>
+        <button class="vm-btn x" onclick="fecharModal()" title="Fechar (Esc)">✕</button>
+      </div>
+    </div>
+    <div class="vm-body"></div></div>`;
+  d.addEventListener('mousedown', e => { if (e.target === d) fecharModal(); });
+  document.body.appendChild(d);
+  return (_vm = d);
 }
-function fecharModal() { el('modal').classList.add('hidden'); el('modalBody').innerHTML = ''; if (_mUrl) { URL.revokeObjectURL(_mUrl); _mUrl = null; } }
+
+function abrirModalUrl(tit, url, img, revogar) {
+  fecharModal();
+  _mUrl = revogar ? url : null;
+  const m = vmEnsure(), partes = String(tit || '').split(' — ');
+  const nomeArq = (partes[1] || partes[0] || 'documento').trim();
+  m.querySelector('.vm-tit').textContent = partes[0];
+  m.querySelector('.vm-sub').textContent = partes.slice(1).join(' — ');
+  const dl = m.querySelector('#vmDl'), nv = m.querySelector('#vmNew');
+  dl.href = url; dl.download = nomeArq; nv.href = url;
+  m.querySelector('.vm-body').innerHTML = img
+    ? `<div class="vm-img"><img id="vmImg" src="${url}" alt="documento"></div>`
+    : `<iframe src="${url}" title="documento"></iframe>`;
+  m.querySelector('#vmZoomBox').style.display = img ? 'inline-flex' : 'none';
+  _vmZ = 70; vmZoom(0);
+  m.classList.add('on');
+  document.body.style.overflow = 'hidden';
+}
+function vmZoom(d) {
+  _vmZ = d === 0 ? 70 : Math.max(20, Math.min(300, _vmZ + d));
+  const i = el('vmImg'); if (i) i.parentNode.style.setProperty('--z', _vmZ + '%');
+  const l = el('vmZ'); if (l) l.textContent = _vmZ + '%';
+}
+function fecharModal() {
+  if (_vm) { _vm.classList.remove('on'); _vm.querySelector('.vm-body').innerHTML = ''; }
+  document.body.style.overflow = '';
+  if (_mUrl) { URL.revokeObjectURL(_mUrl); _mUrl = null; }
+}
 document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharModal(); });
+
+function vmDialog(html, onMount) {
+  return new Promise(res => {
+    const o = document.createElement('div'); o.className = 'vm on';
+    o.innerHTML = `<div class="vm-box vm-sm">${html}</div>`;
+    const fim = v => { document.removeEventListener('keydown', escH, true); o.remove(); res(v); };
+    const escH = e => { if (e.key === 'Escape') { e.stopImmediatePropagation(); fim(null); } };
+    document.addEventListener('keydown', escH, true);
+    o.addEventListener('mousedown', e => { if (e.target === o) fim(null); });
+    document.body.appendChild(o);
+    onMount(o, fim);
+  });
+}
+
+function pedirJustificativa(titulo, motivos) {
+  return vmDialog(`
+    <div class="vm-head"><div class="vm-ico warn">⚖</div>
+      <div class="vm-txt"><div class="vm-tit">Relevar NOK</div>
+      <div class="vm-sub">${esc(titulo || '')} · a justificativa fica registrada</div></div></div>
+    <div class="vm-content">
+      ${motivos ? `<div class="vm-motivos">${esc(motivos)}</div>` : ''}
+      <label>Justificativa <span>(obrigatória, mínimo 5 caracteres)</span></label>
+      <textarea maxlength="500" placeholder="Explique por que este NOK pode ser relevado..."></textarea>
+      <div class="vm-count"><span>0</span>/500</div>
+    </div>
+    <div class="vm-foot"><button class="ghost" data-x>Cancelar</button>
+      <button class="primary" data-ok disabled>⚖ Relevar e concluir</button></div>`,
+  (o, fim) => {
+    const ta = o.querySelector('textarea'), ok = o.querySelector('[data-ok]'), c = o.querySelector('.vm-count span');
+    ta.oninput = () => { c.textContent = ta.value.length; ok.disabled = ta.value.trim().length < 5; };
+    o.querySelector('[data-x]').onclick = () => fim(null);
+    ok.onclick = () => fim(ta.value.trim());
+    ta.focus();
+  });
+}
+
+function confirmarAcao(titulo, texto, rotuloOk) {
+  return vmDialog(`
+    <div class="vm-head"><div class="vm-ico nok">!</div><div class="vm-txt"><div class="vm-tit">${esc(titulo)}</div></div></div>
+    <div class="vm-content" style="font-size:14px;color:#334155">${esc(texto)}</div>
+    <div class="vm-foot"><button class="ghost" data-x>Cancelar</button>
+      <button class="primary" data-ok>${esc(rotuloOk || 'Confirmar')}</button></div>`,
+  (o, fim) => {
+    o.querySelector('[data-x]').onclick = () => fim(null);
+    o.querySelector('[data-ok]').onclick = () => fim(true);
+    o.querySelector('[data-ok]').focus();
+  }).then(v => !!v);
+}
 
 async function verArquivoHist(id) {
   const a = HIST.find(x => x.id === id); if (!a) return;
@@ -617,29 +769,15 @@ async function aplicarRelevo(id, relevar, justificativa) {
 }
 async function relevarNok(id) {
   const a = HIST.find(x => x.id === id); if (!a) return;
-  const just = prompt('Justificativa para relevar o NOK (obrigatória):\n\n' + (a.motivos_nok || ''), '');
+  const just = await pedirJustificativa(a.documento, a.motivos_nok);
   if (just === null) return;
-  if (just.trim().length < 5) { alert('Informe uma justificativa (mínimo 5 caracteres).'); return; }
-  try { await aplicarRelevo(id, true, just.trim()); }
-  catch (e) { alert('Não foi possível relevar: ' + e.message); }
+  try { await aplicarRelevo(id, true, just); }
+  catch (e) { toastDl('Não foi possível relevar: ' + e.message, true); }
 }
 async function desfazerRelevo(id) {
-  if (!confirm('Desfazer o relevo e voltar o documento para NOK?')) return;
+  if (!await confirmarAcao('Desfazer relevo', 'O documento volta para o status NOK.', 'Desfazer relevo')) return;
   try { await aplicarRelevo(id, false, ''); }
-  catch (e) { alert('Não foi possível desfazer: ' + e.message); }
-}
-async function relevarEnvio() {
-  const r = ENV.res; if (!r || !r.id) return;
-  const motivos = r.itens.filter(i => i.status === 'NOK').map(i => '• ' + i.item).join('\n');
-  const just = prompt('Justificativa para relevar o NOK (obrigatória):\n\n' + motivos, '');
-  if (just === null) return;
-  if (just.trim().length < 5) { alert('Informe uma justificativa (mínimo 5 caracteres).'); return; }
-  try {
-    await chamarApi({ acao:'relevar', id:r.id, relevar:true, justificativa:just.trim() });
-    r.relevado = true; r.justificativa_relevado = just.trim();
-    atualizarStatusRollout(r.dados?.cpf, (tipoDe(r) || {}).id, 'RELEVADO');
-    render(); carregarHist();
-  } catch (e) { alert('Não foi possível relevar: ' + e.message); }
+  catch (e) { toastDl('Não foi possível desfazer: ' + e.message, true); }
 }
 
 function fmtValor(tipo, v) {
@@ -741,23 +879,229 @@ async function atualizarStatusRollout(cpf, docId, status) {
   try { await vdRpc('rollout_atualizar_status', { p_token: token, p_cpf: digitos(cpf), p_doc_id: docId, p_status: status }); }
   catch (e) { console.warn('Rollout (status):', e.message); }
 }
+const IDB_NOME = 'vd_fila_v1', IDB_STORE = 'itens', MAX_PAR = 4;
+const FN_URL = VDSB.SUPABASE_URL + '/functions/v1/processar-fila';
+const EM_ANDAMENTO = ['fila', 'analisando', 'servidor', 'finalizando'];
+let FILA = [], _seq = 0, _workers = 0, _precisaHist = false, _selEstado = '', _poll = null;
 
-function novoENV(back, eq) { return { back:back || null, eq:eq || null, aviso:'', sigs:null, file:null, url:null, image:false, res:null, ocupado:false }; }
-function novoEnvio(back, eq) {
-  if (ENV.url) URL.revokeObjectURL(ENV.url);
-  ENV = novoENV(typeof back === 'string' ? back : null, typeof eq === 'string' ? eq : null);
-  if (ENV.eq) curEq = ENV.eq;
-  view = 'envio'; render();
+function novoENV(back, eq) { return { back: back || null, eq: eq || null, sel: null }; }
+
+function idb() {
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open(IDB_NOME, 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore(IDB_STORE, { keyPath: 'uid' });
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
 }
-function novoEnvioEquipe(key) { curEq = key; novoEnvio(null, key); }
-function sairEnvio() {
-  if (ENV.eq && EQUIPES.find(e => e.key === ENV.eq)) { view = 'equipe'; curEq = ENV.eq; cur = null; }
-  else if (ENV.back && COLABS.find(c => c.key === ENV.back)) { view = 'colab'; cur = ENV.back; }
-  else { view = 'home'; cur = null; curEq = null; }
-  render();
+const slim = r => { if (!r) return null; const { bruto, texto_extraido, ...resto } = r; return resto; };
+async function idbPut(it) {
+  try {
+    const db = await idb();
+    const rec = { uid: it.uid, file: it.file, eq: it.eq, back: it.back, estado: it.estado,
+                  jobId: it.jobId || null, erro: it.erro || '', aviso: it.aviso || '',
+                  res: slim(it.res), criado: it.criado };
+    await new Promise((ok, no) => { const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(rec); tx.oncomplete = ok; tx.onerror = () => no(tx.error); });
+  } catch (_) {}
 }
-function verIdentificado() {
-  const dd = ENV.res?.dados || {}, cpf = digitos(dd.cpf), nm = norm(dd.nome);
+async function idbDel(uid) {
+  try {
+    const db = await idb();
+    await new Promise(ok => { const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete(uid); tx.oncomplete = ok; tx.onerror = ok; });
+  } catch (_) {}
+}
+async function idbTodos() {
+  const db = await idb();
+  return new Promise((ok, no) => { const rq = db.transaction(IDB_STORE).objectStore(IDB_STORE).getAll();
+    rq.onsuccess = () => ok(rq.result || []); rq.onerror = () => no(rq.error); });
+}
+
+function criarItem(file, extra) {
+  return Object.assign({
+    uid: 'f' + Date.now().toString(36) + (++_seq), file, url: URL.createObjectURL(file),
+    image: (file.type || '').startsWith('image/'), eq: ENV.eq, back: ENV.back,
+    estado: 'fila', res: null, sigs: null, aviso: '', erro: '', jobId: null, criado: Date.now()
+  }, extra || {});
+}
+
+function addArquivos(files) {
+  const ok = (files || []).filter(f => /pdf/i.test(f.type || '') || /\.pdf$/i.test(f.name) || (f.type || '').startsWith('image/'));
+  if (!ok.length) { toastDl('Nenhum PDF/imagem válido selecionado.', true); return; }
+  ok.forEach(f => {
+    const it = criarItem(f);
+    if (f.size > 15 * 1048576) {
+      it.estado = 'erro';
+      it.res = resultadoNok(null, 'Documento', 'Tamanho do arquivo', 'Arquivo acima de 15 MB. Reduza/comprima o PDF.');
+    }
+    FILA.push(it); idbPut(it);
+    if (!ENV.sel) ENV.sel = it.uid;
+  });
+  if (view === 'envio') renderEnvio();
+  painelFila(); bombear();
+}
+
+function bombear() {
+  while (_workers < MAX_PAR) {
+    const it = FILA.find(x => x.estado === 'fila');
+    if (!it) break;
+    _workers++;
+    processar(it).finally(() => { _workers--; bombear(); });
+  }
+  if (!_workers && !FILA.some(x => x.estado === 'fila') && _precisaHist) { _precisaHist = false; carregarHist(); }
+}
+
+async function processar(it) {
+  it.estado = 'analisando'; it.erro = ''; atualizarUI();
+  try {
+    const f = it.file;
+    if (!it.jobId) {
+      const caminho = `fila/${it.uid}.${extDe(f.name, f.type)}`;
+      const up = await fetch(`${VDSB.SUPABASE_URL}/storage/v1/object/${BUCKET_DOCS}/${caminho}`, {
+        method: 'POST', body: f,
+        headers: { apikey: VDSB.SUPABASE_ANON_KEY, 'Content-Type': f.type || 'application/pdf', 'x-upsert': 'true' } });
+      if (!up.ok) throw new Error('Upload falhou (' + up.status + ')');
+      it.sigs = await lerAssinaturasPdf(f);
+      it.jobId = await vdRpc('fila_enfileirar', { p_token: tokenAdm(), p_path: caminho,
+        p_nome: f.name, p_mime: f.type || 'application/pdf', p_contexto: { assinaturas_digitais: it.sigs } });
+    }
+    it.estado = 'servidor'; idbPut(it);
+    fetch(FN_URL, { method: 'POST' }).catch(() => {});  
+    pollFila();
+  } catch (e) {
+    it.estado = 'erro'; it.erro = e.message;
+    it.res = resultadoNok(null, 'Sistema', 'Falha no envio', e.message); idbPut(it);
+  }
+  atualizarUI();
+}
+
+
+function pollFila() {
+  if (_poll) return;
+  _poll = setInterval(async () => {
+    const ativos = FILA.filter(x => x.estado === 'servidor' && x.jobId);
+    if (!ativos.length) { clearInterval(_poll); _poll = null; return; }
+    try {
+      const L = await vdRpc('fila_listar', { p_token: tokenAdm(), p_ids: ativos.map(x => x.jobId) });
+      for (const j of (L || [])) {
+        const it = FILA.find(x => x.jobId === j.id);
+        if (!it || it.estado !== 'servidor') continue;
+        if (j.estado === 'concluido') await concluirItem(it, j.resultado);
+        else if (j.estado === 'erro') {
+          it.estado = 'erro'; it.erro = j.erro || 'Falha no servidor';
+          it.res = resultadoNok(null, 'Sistema', 'Falha na análise', it.erro); idbPut(it); atualizarUI();
+        }
+      }
+    } catch (_) {}
+  }, 5000);
+}
+
+async function concluirItem(it, resultado) {
+  it.estado = 'finalizando';
+  it.res = resultado;
+  if (it.res && it.res.registro) {
+    HIST = HIST.filter(x => x.id !== it.res.registro.id);
+    HIST.unshift(it.res.registro); COLABS = agrupar(); guardarHistLocal();
+  }
+  if (it.eq && it.res && it.res.dados && Object.keys(it.res.dados).length) {
+    const dd = it.res.dados, cpf = digitos(dd.cpf);
+    if (cpf.length === 11) { addMembroLocal(it.eq, dd.nome || '', cpf); it.aviso = '✓ ' + (dd.nome || fmtCpf(cpf)) + ' está na equipe.'; }
+    else it.aviso = '⚠ CPF não identificado no documento: ninguém foi adicionado à equipe.';
+  }
+  await enviarParaRollout(it.file, it.res);
+  it.estado = 'pronto'; idbPut(it); _precisaHist = true; atualizarUI(); bombear();
+}
+
+async function retomarFila() {
+  try {
+    const recs = await idbTodos(), limite = Date.now() - 864e5;
+    for (const r of recs) {
+      if (r.criado < limite) { idbDel(r.uid); continue; }
+      if (FILA.some(x => x.uid === r.uid)) continue;
+      FILA.push(criarItem(r.file, { uid: r.uid, eq: r.eq, back: r.back, aviso: r.aviso, erro: r.erro, res: r.res,
+        jobId: r.jobId, criado: r.criado,
+        estado: (r.estado === 'pronto' || r.estado === 'erro') ? r.estado : (r.jobId ? 'servidor' : 'fila') }));
+    }
+    if (FILA.some(x => x.estado === 'fila' || x.estado === 'servidor')) toastDl('Retomando análise de documentos pendentes...', true);
+    painelFila(); bombear(); pollFila();
+  } catch (_) {}
+}
+
+function selFila(uid) { ENV.sel = uid; renderEnvio(); }
+const itemSel = () => FILA.find(x => x.uid === ENV.sel) || null;
+function removerFila(uid) {
+  const it = FILA.find(x => x.uid === uid); if (!it || EM_ANDAMENTO.includes(it.estado)) return;
+  URL.revokeObjectURL(it.url); FILA = FILA.filter(x => x !== it); idbDel(uid);
+  if (ENV.sel === uid) ENV.sel = null;
+  renderEnvio(); painelFila();
+}
+function tentarDeNovo(uid) {
+  const it = FILA.find(x => x.uid === uid); if (!it || it.file.size > 15 * 1048576) return;
+  it.estado = 'fila'; it.res = null; it.jobId = null; it.erro = '';
+  renderEnvio(); painelFila(); bombear();
+}
+function limparConcluidos() {
+  FILA.filter(x => x.estado === 'pronto').forEach(it => { URL.revokeObjectURL(it.url); idbDel(it.uid); });
+  FILA = FILA.filter(x => x.estado !== 'pronto');
+  if (!itemSel()) ENV.sel = null;
+  renderEnvio();
+}
+
+function abrirFila() { view = 'envio'; render(); }
+function painelFila() {
+  let p = el('filaBox');
+  const pend = FILA.filter(x => EM_ANDAMENTO.includes(x.estado));
+  if (!pend.length || view === 'envio') { if (p) p.classList.add('hidden'); return; }
+  if (!p) {
+    p = document.createElement('div'); p.id = 'filaBox'; p.onclick = abrirFila;
+    p.style.cssText = 'position:fixed;left:16px;bottom:16px;z-index:60;background:#0f172a;color:#fff;padding:12px 16px;border-radius:10px;font-size:13px;max-width:340px;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.3)';
+    document.body.appendChild(p);
+  }
+  p.innerHTML = `<span class="spin"></span>Analisando documentos: ${FILA.length - pend.length} de ${FILA.length} concluídos<br><small>Continua em segundo plano. Clique para ver.</small>`;
+  p.classList.remove('hidden');
+}
+function atualizarUI() {
+  painelFila();
+  if (view !== 'envio' || !el('filaLista')) return;
+  renderFilaLista();
+  const it = itemSel();
+  if ((it ? it.estado : '') !== _selEstado) renderEnvio();
+}
+function stItem(it) {
+  if (it.estado === 'fila') return ['b-warn', 'NA FILA'];
+  if (it.estado === 'analisando') return ['b-warn', 'ENVIANDO...'];
+  if (it.estado === 'servidor' || it.estado === 'finalizando') return ['b-warn', 'ANALISANDO NO SERVIDOR'];
+  if (it.estado === 'erro') return ['b-nok', 'ERRO'];
+  const r = it.res || {};
+  if (r.relevado) return ['b-rel', 'RELEVADO'];
+  const s = statusDoc(r.status);
+  return s === 'NOK' ? ['b-nok', 'NOK'] : s === 'ATENCAO' ? ['b-warn', 'ATENÇÃO'] : ['b-ok', 'OK'];
+}
+function renderFilaLista() {
+  const box = el('filaLista'); if (!box) return;
+  if (!FILA.length) { box.innerHTML = ''; return; }
+  const feitos = FILA.filter(x => x.estado === 'pronto' || x.estado === 'erro').length;
+  box.innerHTML = `<div class="sec">Fila de envio (${feitos} de ${FILA.length} analisados)
+      ${FILA.some(x => x.estado === 'pronto') ? '<button class="ghost sm" onclick="limparConcluidos()" style="margin-left:8px">Limpar concluídos</button>' : ''}</div>` +
+    FILA.map(it => {
+      const [bc, bt] = stItem(it), r = it.res, tipo = r ? tipoDe(r) : null, dd = (r && r.dados) || {};
+      const andando = EM_ANDAMENTO.includes(it.estado);
+      const cls = it.uid === ENV.sel ? 'drow ' + (bc === 'b-ok' ? 'ok' : bc === 'b-nok' ? 'nok' : 'pend') : 'drow';
+      return `<div class="${cls}" style="cursor:pointer" onclick="selFila('${it.uid}')">
+        <div style="flex:1;min-width:200px"><b>${esc(it.file.name)}</b>
+          <div class="evid">${tipo ? esc(tipo.nome) : (it.estado === 'pronto' ? 'tipo não reconhecido' : '')}${dd.nome ? ' · ' + esc(dd.nome) : ''}${it.erro ? ' · ' + esc(it.erro) : ''}</div></div>
+        <span class="badge ${bc}">${andando && it.estado !== 'fila' ? '<span class="spin"></span>' : ''}${bt}</span>
+        <div class="btns" onclick="event.stopPropagation()">
+          ${it.estado === 'erro' && it.file.size <= 15 * 1048576 ? `<button class="ghost sm" onclick="tentarDeNovo('${it.uid}')">↻ Tentar de novo</button>` : ''}
+          ${!andando ? `<button class="ghost sm" onclick="removerFila('${it.uid}')">✕</button>` : ''}
+        </div></div>`;
+    }).join('');
+}
+
+function verIdentificado(uid) {
+  const it = FILA.find(x => x.uid === uid); if (!it) return;
+  const dd = (it.res && it.res.dados) || {}, cpf = digitos(dd.cpf), nm = norm(dd.nome);
   const g = COLABS.find(c => !c.sem && ((cpf.length === 11 && c.cpf === cpf) || (nm && norm(c.nome) === nm)));
   if (g) {
     const eq = curEq ? EQUIPES.find(e => e.key === curEq) : null;
@@ -765,138 +1109,123 @@ function verIdentificado() {
     cur = g.key; view = 'colab'; render();
   } else irHome();
 }
-function escolherEnv(file) {
-  if (!file || ENV.ocupado) return;
-  if (ENV.url) URL.revokeObjectURL(ENV.url);
-  ENV.file = file; ENV.sigs = null; ENV.url = URL.createObjectURL(file);
-  ENV.image = (file.type || '').startsWith('image/'); ENV.res = null; ENV.aviso = '';
-  validarEnvio();  
-}
-function soltar(ev) {
-  ev.preventDefault(); ev.currentTarget.classList.remove('over');
-  if (!ENV.ocupado && ev.dataTransfer.files[0]) escolherEnv(ev.dataTransfer.files[0]);
-}
-async function validarEnvio() {
-  const f = ENV.file;
-  if (!f || ENV.ocupado) return;
-  if (f.size > 15 * 1048576) {
-    ENV.res = resultadoNok(null, 'Documento', 'Tamanho do arquivo', 'Arquivo acima de 15 MB. Reduza/comprima o PDF.');
-    render(); return;
-  }
-  ENV.ocupado = true; render();
-  try {
-    const [sigs, b64] = await Promise.all([lerAssinaturasPdf(f), lerBase64(f)]);
-    ENV.sigs = sigs;
-    const j = await chamarApi({ acao:'validar', doc_id:'auto', nome_arquivo:f.name,
-      mime:f.type || 'application/pdf', base64: b64,
-      contexto:{ assinaturas_digitais: ENV.sigs } });
-    ENV.res = j.resultado;
-    if (ENV.res && ENV.res.registro) {
-      HIST = HIST.filter(x => x.id !== ENV.res.registro.id);
-      HIST.unshift(ENV.res.registro); COLABS = agrupar(); guardarHistLocal();
-    }
-    if (ENV.eq && ENV.res && ENV.res.dados && Object.keys(ENV.res.dados).length) {
-      const dd = ENV.res.dados, cpf = digitos(dd.cpf);
-      if (cpf.length === 11) { addMembroLocal(ENV.eq, dd.nome || '', cpf); ENV.aviso = '✓ ' + (dd.nome || fmtCpf(cpf)) + ' está na equipe.'; }
-      else ENV.aviso = '⚠ CPF não identificado no documento: ninguém foi adicionado à equipe. Use "＋ Integrante" na tela da equipe.';
-    }
-    enviarParaRollout(f, ENV.res);  
-  } catch (e) {
-    ENV.res = resultadoNok(null, 'Sistema', 'Falha na análise', e.message);
-  }
-  ENV.ocupado = false; render();
-  if (ENV.res && ENV.res.salvo && !ENV.res.registro) carregarHist(); 
-}
-
-function baixarEnvio() {
-  const f = ENV.file;
-  if (!f) return;
-  const r = ENV.res || {}, reg = r.registro || {}, dd = r.dados || {};
-  const tipo = ENV.res ? tipoDe(r) : null;
+function baixarEnvio(uid) {
+  const it = FILA.find(x => x.uid === uid); if (!it) return;
+  const f = it.file, r = it.res || {}, reg = r.registro || {}, dd = r.dados || {};
+  const tipo = it.res ? tipoDe(r) : null;
   const docNome = (tipo && tipo.nome) || reg.documento || 'DOCUMENTO';
   const nome = (reg.nome || dd.nome || 'SEM NOME').toUpperCase();
   const validade = reg.validade || r.validade || dd.data_validade || '';
-  const base = `${limparNome(docNome)}_${limparNome(nome)}_${fmtValidadeArq(validade)}`;
-  salvarBlob(f, `${base}.${extDe(f.name, f.type)}`);
+  salvarBlob(f, `${limparNome(docNome)}_${limparNome(nome)}_${fmtValidadeArq(validade)}.${extDe(f.name, f.type)}`);
   toastDl('Arquivo baixado.', true);
 }
-
-function renderEnvio() {
-  const r = ENV.res, f = ENV.file;
-  const back = ENV.back ? COLABS.find(c => c.key === ENV.back) : null;
-  const eqEnv = ENV.eq ? EQUIPES.find(e => e.key === ENV.eq) : null;
-  let h = `<div class="card">
-    <div class="chead"><div><h2>Enviar documento${eqEnv ? ' — ' + esc(eqTitulo(eqEnv)) : back ? ' — ' + esc(back.nome || 'colaborador') : ''}</h2>
-      <p class="dica">${eqEnv ? 'Arraste o arquivo: a IA identifica o tipo do documento e a pessoa, diz se está OK ou NOK, e a pessoa entra na equipe automaticamente.' : 'Arraste o arquivo: a IA identifica o tipo do documento e o colaborador, e diz se está OK ou NOK.'}</p></div>
-      <button class="ghost" ${ENV.ocupado ? 'disabled' : ''} onclick="sairEnvio()">${eqEnv ? '← Voltar à equipe' : '← Voltar'}</button></div>
-    <label class="drop" ondragover="event.preventDefault();this.classList.add('over')" ondragleave="this.classList.remove('over')" ondrop="soltar(event)">
-      <input type="file" accept=".pdf,image/*" ${ENV.ocupado ? 'disabled' : ''} onchange="escolherEnv(this.files[0]);this.value=''">
-      <div class="big">📤</div><div><b>Clique para escolher</b> ou arraste o arquivo aqui</div>
-      <div class="msg">PDF ou imagem, até ~15 MB. Aceitos: ${DOCS.filter(x => !x.pessoal).map(x => esc(x.ab)).join(', ')}.</div>
-    </label>
-    ${f ? `<div class="filechip"><div class="th">${ENV.image ? `<img src="${ENV.url}" alt="">` : '📄'}</div>
-      <div style="flex:1;min-width:0"><div style="font-weight:600;word-break:break-all">${esc(f.name)}</div><div class="msg" style="margin:0">${(f.size / 1048576).toFixed(1)} MB</div></div></div>` : ''}
-    ${ENV.ocupado ? '<div class="row"><span class="msg"><span class="spin"></span>Identificando e analisando o documento... pode levar até 1 minuto.</span></div>' : ''}`;
-
-  if (r && !ENV.ocupado) {
-    const tipo = tipoDe(r);
-    const motivos = r.itens.filter(i => i.status === 'NOK');
-    const avisos = r.itens.filter(i => i.status === 'ATENCAO');
-    const relevado = !!r.relevado;
-    const valido = r.status !== 'NOK' || relevado;
-    const ab = tipo ? tipo.ab : 'DOCUMENTO';
-    const dd = r.dados || {};
-
-    h += `<div class="tipo">Tipo identificado: <span class="badge">${tipo ? esc(tipo.nome) : 'não reconhecido'}</span></div>
-      <div class="veredito ${relevado ? 'rel' : valido ? 'ok' : 'nok'}">${relevado ? '⚖ ' + esc(ab) + ' — NOK RELEVADO, CONCLUÍDO' : valido ? '✓ ' + esc(ab) + ' OK' : '✗ ' + esc(ab) + ' NOK'}</div>
-      ${ENV.aviso ? `<p class="msg">${esc(ENV.aviso)}</p>` : ''}`;
-    if (!valido && tipo) h += blocoSugestao(tipo.id, dd.cpf, 'env');
-
-    let det = '';
-    if (motivos.length) det += `<div class="sec">Motivos do NOK</div><ul style="margin:6px 0 0;padding-left:20px;font-size:14px">${motivos.map(m => `<li><b>${esc(m.item)}</b>${m.obs ? ': ' + esc(m.obs) : ''}</li>`).join('')}</ul>`;
-    if (relevado && r.justificativa_relevado) det += `<p class="msg">Justificativa do relevo: ${esc(r.justificativa_relevado)}</p>`;
-    if (valido && !relevado && avisos.length) det += `<div class="sec">Atenções</div><ul style="margin:6px 0 0;padding-left:20px;font-size:14px">${avisos.map(m => `<li><b>${esc(m.item)}</b>${m.obs ? ': ' + esc(m.obs) : ''}</li>`).join('')}</ul>`;
-
-    if (dd.nome || dd.cpf) {
-      det += `<p class="msg">Documento identificado como de: <b>${esc(dd.nome || 'nome não legível')}</b>${dd.cpf ? ' · CPF ' + esc(fmtCpf(dd.cpf)) : ''}</p>`;
-    }
-    if (back && dd.nome && back.nome && norm(dd.nome) !== norm(back.nome)) {
-      det += `<div class="aviso">⚠ O nome no documento (${esc(dd.nome)}) não confere com o colaborador selecionado (${esc(back.nome)}). O arquivo será listado no colaborador identificado no documento.</div>`;
-    }
-    const sg = ENV.sigs;
-    if (sg && sg.quantidade > 0) {
-      det += `<div class="sec">Assinaturas digitais embutidas no arquivo</div>
-        <p class="msg">O PDF contém <b>${sg.quantidade}</b> assinatura(s) digital(is) (certificado), mesmo que não apareçam desenhadas na página.
-        ${sg.signatarios.length ? '' : 'Os nomes dos signatários não puderam ser lidos do certificado.'}</p>` +
-        (sg.signatarios.length ? `<table><tr><th>Signatário (certificado)</th><th>CPF</th></tr>` +
-          sg.signatarios.map(s => `<tr><td>${esc(s.nome)}</td><td>${esc(fmtCpf(s.cpf))}</td></tr>`).join('') + `</table>` : '');
-      const semAss = (r.assinaturas || []).some(a => !a.presente) || r.itens.some(i => i.status === 'NOK' && /assinatura/i.test(i.grupo + ' ' + i.item));
-      if (semAss) det += `<div class="aviso">⚠ O arquivo tem assinatura digital, mas a análise marcou assinatura como ausente. Confira abrindo o arquivo no leitor de PDF (o aviso "não foi possível verificar algumas assinaturas" costuma ser só da cadeia de certificados do gov.br, não ausência de assinatura).</div>`;
-    }
-    det += blocoDados(r) + tabelaItens(r);
-
-    h += `<details class="retorno noprint"><summary>Ver retorno da IA</summary>${det}</details>`;
-
-    if (!r.salvo && r.erro_salvar) h += `<p class="msg" style="color:var(--warn)">⚠ A análise não foi salva no histórico: ${esc(r.erro_salvar)}</p>`;
-
-    h += `<div class="row"><button class="primary" onclick="verIdentificado()">👤 Ver colaborador</button>
-      ${eqEnv ? '<button class="ghost" onclick="sairEnvio()">👥 Voltar à equipe</button>' : ''}
-      <button class="ghost" onclick="baixarEnvio()">⬇ Baixar documento</button>
-      ${!valido && r.id ? '<button class="primary" style="background:#4f46e5" onclick="relevarEnvio()">⚖ Relevar NOK e concluir</button>' : ''}
-      <button class="ghost" onclick="novoEnvio(ENV.back, ENV.eq)">＋ Enviar outro documento</button></div>`;
-  }
-  h += `</div>`;
-
-  const preview = f ? `<div class="card preview"><div class="ph"><span>Documento enviado</span>
-      <span class="phb">
-        <button class="ghost sm" onclick="baixarEnvio()">⬇ Baixar</button>
-        <button class="ghost sm" onclick="abrirModalUrl('${esc(f.name.replace(/'/g, ''))}', ENV.url, ENV.image, false)">⛶ Tela cheia</button>
-      </span></div>
-      ${ENV.image ? `<img src="${ENV.url}" alt="documento">` : `<iframe src="${ENV.url}" title="documento"></iframe>`}</div>` : '';
-  el('app').innerHTML = f ? `<div class="split"><div>${h}</div>${preview}</div>` : h;
-  if (el('sg_env')) sugerirParceiro('sg_env');
+async function relevarEnvio(uid) {
+  const it = FILA.find(x => x.uid === uid), r = it && it.res; if (!r || !r.id) return;
+  const motivos = r.itens.filter(i => i.status === 'NOK').map(i => '• ' + i.item).join('\n');
+  const just = await pedirJustificativa((tipoDe(r) || {}).nome, motivos);
+  if (just === null) return;
+  try {
+    await chamarApi({ acao: 'relevar', id: r.id, relevar: true, justificativa: just });
+    r.relevado = true; r.justificativa_relevado = just; idbPut(it);
+    atualizarStatusRollout(r.dados?.cpf, (tipoDe(r) || {}).id, 'RELEVADO');
+    render(); carregarHist();
+  } catch (e) { toastDl('Não foi possível relevar: ' + e.message, true); }
+}
+function soltar(ev) {
+  ev.preventDefault(); ev.currentTarget.classList.remove('over');
+  addArquivos(Array.from(ev.dataTransfer.files || []));
 }
 
+function blocoResultado(it) {
+  const r = it.res; if (!r) return '';
+  const tipo = tipoDe(r), dd = r.dados || {};
+  const motivos = r.itens.filter(i => i.status === 'NOK'), avisos = r.itens.filter(i => i.status === 'ATENCAO');
+  const relevado = !!r.relevado, valido = r.status !== 'NOK' || relevado, ab = tipo ? tipo.ab : 'DOCUMENTO';
+  const back = ENV.back ? COLABS.find(c => c.key === ENV.back) : null;
+  const eqEnv = ENV.eq ? EQUIPES.find(e => e.key === ENV.eq) : null;
+
+  let h = `<div class="tipo">Tipo identificado: <span class="badge">${tipo ? esc(tipo.nome) : 'não reconhecido'}</span></div>
+    <div class="veredito ${relevado ? 'rel' : valido ? 'ok' : 'nok'}">${relevado ? '⚖ ' + esc(ab) + ' — NOK RELEVADO, CONCLUÍDO' : valido ? '✓ ' + esc(ab) + ' OK' : '✗ ' + esc(ab) + ' NOK'}</div>
+    ${it.aviso ? `<p class="msg">${esc(it.aviso)}</p>` : ''}`;
+  if (!valido && tipo) h += blocoSugestao(tipo.id, dd.cpf, 'env');
+
+  let det = '';
+  if (motivos.length) det += `<div class="sec">Motivos do NOK</div><ul style="margin:6px 0 0;padding-left:20px;font-size:14px">${motivos.map(m => `<li><b>${esc(m.item)}</b>${m.obs ? ': ' + esc(m.obs) : ''}</li>`).join('')}</ul>`;
+  if (relevado && r.justificativa_relevado) det += `<p class="msg">Justificativa do relevo: ${esc(r.justificativa_relevado)}</p>`;
+  if (valido && !relevado && avisos.length) det += `<div class="sec">Atenções</div><ul style="margin:6px 0 0;padding-left:20px;font-size:14px">${avisos.map(m => `<li><b>${esc(m.item)}</b>${m.obs ? ': ' + esc(m.obs) : ''}</li>`).join('')}</ul>`;
+  if (dd.nome || dd.cpf) det += `<p class="msg">Documento identificado como de: <b>${esc(dd.nome || 'nome não legível')}</b>${dd.cpf ? ' · CPF ' + esc(fmtCpf(dd.cpf)) : ''}</p>`;
+  if (back && dd.nome && back.nome && norm(dd.nome) !== norm(back.nome))
+    det += `<div class="aviso">⚠ O nome no documento (${esc(dd.nome)}) não confere com o colaborador selecionado (${esc(back.nome)}). O arquivo será listado no colaborador identificado no documento.</div>`;
+  const sg = it.sigs;
+  if (sg && sg.quantidade > 0) {
+    det += `<div class="sec">Assinaturas digitais embutidas no arquivo</div>
+      <p class="msg">O PDF contém <b>${sg.quantidade}</b> assinatura(s) digital(is) (certificado), mesmo que não apareçam desenhadas na página.
+      ${sg.signatarios.length ? '' : 'Os nomes dos signatários não puderam ser lidos do certificado.'}</p>` +
+      (sg.signatarios.length ? `<table><tr><th>Signatário (certificado)</th><th>CPF</th></tr>` +
+        sg.signatarios.map(s => `<tr><td>${esc(s.nome)}</td><td>${esc(fmtCpf(s.cpf))}</td></tr>`).join('') + `</table>` : '');
+    const semAss = (r.assinaturas || []).some(a => !a.presente) || r.itens.some(i => i.status === 'NOK' && /assinatura/i.test(i.grupo + ' ' + i.item));
+    if (semAss) det += `<div class="aviso">⚠ O arquivo tem assinatura digital, mas a análise marcou assinatura como ausente. Confira abrindo o arquivo no leitor de PDF (o aviso "não foi possível verificar algumas assinaturas" costuma ser só da cadeia de certificados do gov.br).</div>`;
+  }
+  det += blocoDados(r) + tabelaItens(r);
+  h += `<details class="retorno noprint"><summary>Ver retorno da IA</summary>${det}</details>`;
+  if (!r.salvo && r.erro_salvar) h += `<p class="msg" style="color:var(--warn)">⚠ A análise não foi salva no histórico: ${esc(r.erro_salvar)}</p>`;
+
+  h += `<div class="row"><button class="primary" onclick="verIdentificado('${it.uid}')">👤 Ver colaborador</button>
+    ${eqEnv ? '<button class="ghost" onclick="sairEnvio()">👥 Voltar à equipe</button>' : ''}
+    <button class="ghost" onclick="baixarEnvio('${it.uid}')">⬇ Baixar documento</button>
+    ${!valido && r.id ? `<button class="primary" style="background:#4f46e5" onclick="relevarEnvio('${it.uid}')">⚖ Relevar NOK e concluir</button>` : ''}</div>`;
+  return h;
+}
+function renderEnvio() {
+  const back = ENV.back ? COLABS.find(c => c.key === ENV.back) : null;
+  const eqEnv = ENV.eq ? EQUIPES.find(e => e.key === ENV.eq) : null;
+  const it = itemSel();
+  _selEstado = it ? it.estado : '';
+  let h = `<div class="card">
+    <div class="chead"><div><h2>Enviar documentos${eqEnv ? ' — ' + esc(eqTitulo(eqEnv)) : back ? ' — ' + esc(back.nome || 'colaborador') : ''}</h2>
+      <p class="dica">Selecione ou arraste <b>vários arquivos de uma vez</b>. A IA identifica o tipo de cada documento e a pessoa, diz se está OK ou NOK${eqEnv ? ', e a pessoa entra na equipe automaticamente' : ''}. A análise roda no servidor: você pode mudar de tela ou fechar a página e voltar depois.</p></div>
+      <button class="ghost" onclick="sairEnvio()">${eqEnv ? '← Voltar à equipe' : '← Voltar'}</button></div>
+    <label class="drop" ondragover="event.preventDefault();this.classList.add('over')" ondragleave="this.classList.remove('over')" ondrop="soltar(event)">
+      <input type="file" multiple accept=".pdf,image/*" onchange="addArquivos(Array.from(this.files));this.value=''">
+      <div class="big">📤</div><div><b>Clique para escolher</b> ou arraste os arquivos aqui</div>
+      <div class="msg">PDF ou imagem, até ~15 MB cada. Aceitos: ${DOCS.filter(x => !x.pessoal).map(x => esc(x.ab)).join(', ')}.</div>
+    </label>
+    <div id="filaLista"></div>`;
+
+  if (it) {
+    h += `<div class="filechip"><div class="th">${it.image ? `<img src="${it.url}" alt="">` : '📄'}</div>
+      <div style="flex:1;min-width:0"><div style="font-weight:600;word-break:break-all">${esc(it.file.name)}</div>
+      <div class="msg" style="margin:0">${(it.file.size / 1048576).toFixed(1)} MB</div></div></div>`;
+    if (it.estado === 'fila') h += '<div class="row"><span class="msg">Na fila, aguardando envio...</span></div>';
+    else if (it.estado === 'analisando') h += '<div class="row"><span class="msg"><span class="spin"></span>Enviando o arquivo ao servidor...</span></div>';
+    else if (it.estado === 'servidor' || it.estado === 'finalizando') h += '<div class="row"><span class="msg"><span class="spin"></span>Analisando no servidor... pode levar até alguns minutos. Você pode sair desta tela.</span></div>';
+    else h += blocoResultado(it);
+  }
+  h += `</div>`;
+  const preview = it ? `<div class="card preview"><div class="ph"><span>Documento selecionado</span>
+      <span class="phb">
+        <button class="ghost sm" onclick="baixarEnvio('${it.uid}')">⬇ Baixar</button>
+        <button class="ghost sm" onclick="const i=itemSel();abrirModalUrl(i.file.name.replace(/'/g,''), i.url, i.image, false)">⛶ Tela cheia</button>
+      </span></div>
+      ${it.image ? `<img src="${it.url}" alt="documento">` : `<iframe src="${it.url}" title="documento"></iframe>`}</div>` : '';
+  el('app').innerHTML = it ? `<div class="split"><div>${h}</div>${preview}</div>` : h;
+  renderFilaLista();
+  if (el('sg_env')) sugerirParceiro('sg_env');
+}
+function novoEnvio(back, eq) {
+  ENV = novoENV(typeof back === 'string' ? back : null, typeof eq === 'string' ? eq : null);
+  if (ENV.eq) curEq = ENV.eq;
+  view = 'envio'; render();
+}
+function validarEnvio() { return Promise.resolve(); }  
+
+function novoEnvioEquipe(key) { curEq = key; novoEnvio(null, key); }
+function sairEnvio() {
+  if (ENV.eq && EQUIPES.find(e => e.key === ENV.eq)) { view = 'equipe'; curEq = ENV.eq; cur = null; }
+  else if (ENV.back && COLABS.find(c => c.key === ENV.back)) { view = 'colab'; cur = ENV.back; }
+  else { view = 'home'; cur = null; curEq = null; }
+  render();
+}
 const limparNome = s => String(s || '').replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim();
 const extDe = (nome, mime) => {
   const m = String(nome || '').match(/\.([A-Za-z0-9]{2,5})$/);
@@ -908,7 +1237,7 @@ function toastDl(msg, fim) {
   let t = el('dlToast');
   if (!t) {
     t = document.createElement('div'); t.id = 'dlToast';
-    t.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:60;background:#0f172a;color:#fff;padding:12px 16px;border-radius:10px;font-size:13px;max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,.3)';
+    t.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:200;background:#0f172a;color:#fff;padding:12px 16px;border-radius:10px;font-size:13px;max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,.3)';
     document.body.appendChild(t);
   }
   t.textContent = msg; t.classList.remove('hidden');
@@ -919,10 +1248,9 @@ function salvarBlob(blob, nome) {
   a.href = u; a.download = nome; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(u), 10000);
 }
-
 function b64ParaU8(b64) {
   if (typeof b64 !== 'string') throw new Error('resposta sem dados do arquivo');
-  let s = b64.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');   // tolera quebras de linha e base64 "url-safe"
+  let s = b64.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/'); 
   if (s.length % 4 === 1) throw new Error('base64 inválido (' + s.length + ' caracteres)');
   while (s.length % 4) s += '=';
   const bin = atob(s), u8 = new Uint8Array(bin.length);
@@ -957,7 +1285,7 @@ async function baixarOk(key) {
   COLABS.filter(g => !g.sem && (!key || g.key === key)).forEach(g =>
     DOCS.forEach((d, k) => {
       const a = g.docs[d.nome];
-      if (a && (g.st[k] === 'OK' || a.origem === 'tecnico')) itens.push({ g, d, a });
+      if (a && (g.st[k] === 'OK' || g.st[k] === 'RELEVADO' || a.origem === 'tecnico')) itens.push({ g, d, a });
     }));
   if (!itens.length) { alert('Nenhum documento com status OK para baixar.'); return; }
   const semArq = itens.filter(i => !temArquivo(i.a)).length;
@@ -992,8 +1320,7 @@ async function baixarOk(key) {
       const zip = new JSZip();
       prontos.forEach(p => zip.file(p.nome, p.blob));
       toastDl('Compactando...');
-      const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });   // PDFs já são compactados: sem recompressão
-      const g1 = key ? COLABS.find(c => c.key === key) : null;
+      const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });  
       salvarBlob(blob, g1 ? `${limparNome(g1.nome || 'colaborador')}_documentos_OK.zip`
                          : `DOCUMENTOS_OK_${new Date().toISOString().slice(0, 10)}.zip`);
     }
@@ -1002,3 +1329,8 @@ async function baixarOk(key) {
   } catch (e) { toastDl('Erro: ' + e.message, true); }
   baixando = false;
 }
+
+window.addEventListener('load', () => retomarFila());
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden && view !== 'envio') carregarHist(); });
+setInterval(() => { if (!document.hidden && view !== 'envio') carregarHist(); }, 60000);
