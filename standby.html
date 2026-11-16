@@ -9,6 +9,9 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/css/style.css">
 <link rel="stylesheet" href="/css/cards.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-grid.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-theme-quartz.css">
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/dist/ag-grid-community.min.js"></script>
 <script src="/js/auth.js"></script>
 </head>
 <body>
@@ -52,8 +55,14 @@
 <script src="/js/diretoria-comum.js"></script>
 <script src="/js/sidebar.js"></script>
 <script>
+let GRID = null;
+function destruirGrid() { if (GRID) { GRID.destroy(); GRID = null; } }
+
+const pillsApt = arr => arr.map(([t, ok]) => `<span class="pill ${ok === false ? 'nok' : 'ok'}">${t}</span>`).join(' ');
+
 async function carregar() {
   const token = tokenAdm();
+  destruirGrid();
   if (!token) { el('app').innerHTML = '<div class="card"><p class="msg">Sessão sem token. Entre novamente.</p></div>'; return; }
   el('app').innerHTML = '<div class="card"><p class="msg"><span class="spin"></span>Carregando...</p></div>';
 
@@ -63,28 +72,58 @@ async function carregar() {
     vdRpc('diretoria_pedidos_standby', { p_token: token }).then(r => r || []).catch(e => { erros.push(e.message); return []; })
   ]);
 
-  const cardCaso = h => `<div class="ccard pend">
-    <div class="nm">${esc(h.nome)}</div>
-    ${blocoCaso(h)}
-    <div class="motivo" style="margin-top:8px"><b>Decisão da diretoria (${esc(fmtTs(h.decidido_em))}):</b> ${esc(h.motivo_decisao || 'sem motivo registrado')}</div>
-  </div>`;
+  const linhas = [
+    ...pedidos.map(p => ({
+      nome: '👥 ' + p.equipe, sub: p.recurso ? 'Recurso: ' + p.recurso : '',
+      apt: [['Trab.', p.apt_trabalhista], ['Téc.', p.apt_tecnico], ['Patr.', p.apt_patrimonial]],
+      motivoApt: p.apt_motivo, anexo: p.apt_anexo,
+      motivoDec: p.diretoria_motivo || 'sem motivo registrado', em: p.decidido_em
+    })),
+    ...casos.map(h => ({
+      nome: h.nome, sub: 'CPF ' + fmtCpf(h.cpf),
+      apt: [['Trab.', h.apto_trabalhista], ['Téc.', h.apto_tecnico], ['Patr.', h.apto_patrimonial]],
+      motivoApt: h.motivo_inapto, anexo: '',
+      motivoDec: h.motivo_decisao || 'sem motivo registrado', em: h.decidido_em
+    }))
+  ];
 
-  const cardPedido = p => {
-    const apt = (v) => v ? 'Apto' : 'Não apto';
-    return `<div class="ccard pend">
-      <div class="nm">${esc(p.equipe)}${p.recurso ? ' — ' + esc(p.recurso) : ''}</div>
-      <div class="motivo" style="margin-top:6px"><b>Aptidão:</b> trabalhista: ${apt(p.apt_trabalhista)} · técnica: ${apt(p.apt_tecnico)} · patrimonial: ${apt(p.apt_patrimonial)}</div>
-      ${p.apt_motivo ? `<div class="motivo" style="margin-top:6px"><b>Motivo da inaptidão:</b> ${esc(p.apt_motivo)}</div>` : ''}
-      ${p.apt_anexo ? `<div style="margin-top:6px"><a href="${esc(p.apt_anexo)}" target="_blank" rel="noopener">Ver anexo</a></div>` : ''}
-      <div class="motivo" style="margin-top:8px"><b>Decisão da diretoria (${esc(fmtTs(p.decidido_em))}):</b> ${esc(p.diretoria_motivo || 'sem motivo registrado')}</div>
-    </div>`;
-  };
-
-  const total = casos.length + pedidos.length;
-  el('app').innerHTML = `<div class="card"><div class="chead"><h2>Reprovados (${total})</h2></div>
+  el('app').innerHTML = `<div class="card"><div class="chead"><h2>Reprovados (${linhas.length})</h2></div>
     ${erros.length ? `<p class="msg" style="color:var(--nok)">⚠ ${esc(erros.join(' | '))}</p>` : ''}
-    ${total ? `<div class="cgrid">${pedidos.map(cardPedido).join('')}${casos.map(cardCaso).join('')}</div>`
-            : '<p class="msg">Nenhuma equipe em standby.</p>'}</div>`;
+    ${linhas.length
+      ? '<div id="gridStandby" class="ag-theme-quartz vd-grid" style="height:min(70vh,720px)"></div>'
+      : '<p class="msg">Nenhuma equipe em standby.</p>'}</div>`;
+
+  if (!linhas.length) return;
+
+  GRID = agGrid.createGrid(el('gridStandby'), {
+    columnDefs: [
+      { headerName: 'Equipe / Técnico', field: 'nome', flex: 1.2, minWidth: 220, autoHeight: true,
+        valueGetter: p => p.data.nome + ' ' + p.data.sub,
+        cellRenderer: p => `<div class="vg-nome" style="padding:8px 0"><b>${esc(p.data.nome)}</b>${p.data.sub ? `<div class="evid">${esc(p.data.sub)}</div>` : ''}</div>` },
+      { headerName: 'Aptidão', flex: 1.4, minWidth: 240, autoHeight: true, wrapText: true, sortable: false, filter: false,
+        cellRenderer: p => `<div style="padding:8px 0">${pillsApt(p.data.apt)}
+          ${p.data.motivoApt ? `<div class="evid">${esc(p.data.motivoApt)}</div>` : ''}
+          ${p.data.anexo ? `<div class="evid"><a href="${esc(p.data.anexo)}" target="_blank" rel="noopener">Ver anexo</a></div>` : ''}</div>` },
+      { headerName: 'Decisão da diretoria', field: 'motivoDec', flex: 1.6, minWidth: 260, autoHeight: true, wrapText: true,
+        cellRenderer: p => `<div style="padding:8px 0">${esc(p.value)}</div>` },
+      { headerName: 'Decidido em', width: 170, sort: 'desc',
+        valueGetter: p => Date.parse(p.data.em) || 0,
+        valueFormatter: p => fmtTs(p.data.em) }
+    ],
+    rowData: linhas,
+    defaultColDef: { sortable: true, resizable: true, filter: true, suppressMovable: true },
+    suppressCellFocus: true,
+    pagination: linhas.length > 25,
+    paginationPageSize: 25,
+    localeText: {
+      noRowsToShow: 'Nada para mostrar', page: 'Página', of: 'de', to: 'a', more: 'mais',
+      next: 'Próxima', previous: 'Anterior', first: 'Primeira', last: 'Última',
+      filterOoo: 'Filtrar...', contains: 'Contém', notContains: 'Não contém', equals: 'Igual',
+      notEqual: 'Diferente', startsWith: 'Começa com', endsWith: 'Termina com',
+      greaterThan: 'Maior que', lessThan: 'Menor que', inRange: 'Entre',
+      andCondition: 'E', orCondition: 'OU', applyFilter: 'Aplicar', resetFilter: 'Limpar', clearFilter: 'Limpar'
+    }
+  });
 }
 carregar();
 </script>

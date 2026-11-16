@@ -756,3 +756,91 @@ html.sb-collapsed { --sb-w-cur: var(--sb-w-min); }
   .sb, .sb-overlay, .mbar, .sb-tip { display: none !important; }
   .app-main { margin-left: 0 !important; }
 }
+/* ===== AG Grid com o visual da página ===== */
+.ag-theme-quartz.vd-grid{
+  --ag-font-family: inherit;
+  --ag-font-size: 13px;
+  --ag-foreground-color: #0f172a;
+  --ag-background-color: #fff;
+  --ag-header-background-color: #f1f5f9;
+  --ag-header-foreground-color: #475569;
+  --ag-border-color: #e2e8f0;
+  --ag-row-border-color: #eef2f7;
+  --ag-row-hover-color: #f8fafc;
+  --ag-odd-row-background-color: #fff;
+  --ag-row-height: 60px;
+  --ag-header-height: 42px;
+  --ag-cell-horizontal-padding: 12px;
+  --ag-borders: none;
+  --ag-borders-critical: solid 1px;
+  --ag-cell-widget-spacing: 6px;
+  width: 100%;
+}
+.hbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+
+.field .trn {
+  margin-top: 6px; padding: 6px 8px; background: #f8fafc; border-radius: 8px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+}
+.field .trn > label {
+  margin: 0; font-size: 11px; font-weight: 500; color: #64748b;
+  text-transform: none; letter-spacing: 0; white-space: nowrap;
+}
+.field .trn input {
+  height: 30px; padding: 2px 8px; font-size: 13px; border-radius: 6px; margin: 0;
+}
+.field .trn input[type=number] { width: 56px; }
+.field .trn input[type=date] { width: 138px; }
+.field .trn .trn-datas { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 100%; }
+.field .trn .trn-datas label {
+  display: flex; align-items: center; gap: 4px; margin: 0;
+  font-size: 11px; font-weight: 500; color: #64748b; text-transform: none; letter-spacing: 0;
+}
+.vd-grid .ag-header-cell-label{ font-weight:700; font-size:12px; text-transform:uppercase; letter-spacing:.02em }
+.vd-grid .ag-row{ cursor:pointer }
+.vd-grid .ag-row.lin-ok  { box-shadow: inset 3px 0 0 var(--ok,  #16a34a) }
+.vd-grid .ag-row.lin-nok { box-shadow: inset 3px 0 0 var(--nok, #dc2626) }
+.vd-grid .ag-row.lin-pend{ box-shadow: inset 3px 0 0 var(--warn,#d97706) }
+
+/* causa do corte: o AG Grid usa line-height = altura da linha */
+.vd-grid .ag-cell{ display:flex; align-items:center; line-height:1.25; padding-top:0; padding-bottom:0 }
+.vd-grid .ag-cell > *{ min-width:0 }
+
+/* centralizar colunas de documento (cabeçalho e célula) */
+.vd-grid .vg-c{ justify-content:center }
+.vd-grid .vg-hc .ag-header-cell-label{ justify-content:center }
+
+/* nome + CPF */
+.vd-grid .vg-nome{ display:flex; flex-direction:column; gap:2px; overflow:hidden }
+.vd-grid .vg-nome b{ display:block; margin:0; font-size:13px; font-weight:700; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.vd-grid .vg-nome small{ display:block; margin:0; font-size:11px; color:#64748b; line-height:1.2 }
+
+/* badges e pills próprios (não herdam o CSS global) */
+.vd-grid .vg-b{ display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 10px; border-radius:99px;
+  font-size:11px; font-weight:700; line-height:1; white-space:nowrap; background:#f1f5f9; color:#475569 }
+.vd-grid .vg-b::before{ content:''; width:6px; height:6px; border-radius:50%; background:currentColor }
+.vd-grid .vg-b.ok  { background:#dcfce7; color:#15803d }
+.vd-grid .vg-b.nok { background:#fee2e2; color:#b91c1c }
+.vd-grid .vg-b.warn{ background:#fef3c7; color:#b45309 }
+
+.vd-grid .vg-p{ display:inline-flex; align-items:center; justify-content:center; width:28px; height:24px; border-radius:6px;
+  font-size:12px; font-weight:700; line-height:1; background:#f1f5f9; color:#94a3b8 }
+.vd-grid .vg-p.ok  { background:#dcfce7; color:#15803d }
+.vd-grid .vg-p.nok { background:#fee2e2; color:#b91c1c }
+.vd-grid .vg-p.at  { background:#fef3c7; color:#b45309 }
+.vd-grid .vg-p.rel { background:#e0e7ff; color:#4338ca }
+.vd-grid .vg-pills{ display:flex; gap:4px; flex-wrap:nowrap }
+.vd-grid .vg-pills .vg-p{ width:auto; padding:0 8px }
+
+/* progresso */
+.vd-grid .vg-prog{ width:100%; display:flex; flex-direction:column; gap:4px }
+.vd-grid .vg-bar{ height:6px; background:#e2e8f0; border-radius:99px; overflow:hidden; display:flex }
+.vd-grid .vg-bar i{ display:block; height:100% }
+.vd-grid .vg-bar i.g{ background:var(--ok,#16a34a) }
+.vd-grid .vg-bar i.r{ background:var(--nok,#dc2626) }
+.vd-grid .vg-prog small{ display:block; margin:0; font-size:11px; color:#64748b; line-height:1.2 }
+.vd-grid .vg-pills{ width:100%; min-width:0; flex-wrap:wrap; gap:4px }
+.vd-grid .vg-pills .vg-p{ height:22px; padding:0 7px; font-size:11px; width:auto; white-space:nowrap }
+.vd-grid .vg-nome small{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.vd-grid .vg-cid{ font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+@media print{ .vd-grid{ height:auto !important } }

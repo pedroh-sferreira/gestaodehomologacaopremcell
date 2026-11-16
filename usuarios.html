@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usuários - Aprovação de Cadastros - PremCell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="/css/cards.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-grid.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-theme-quartz.css">
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/dist/ag-grid-community.min.js"></script>
+<script src="/js/auth.js"></script>
+<style>
+  .sel-perfil { height:36px; padding:0 10px; border:1px solid #ADB8D9; border-radius:8px; background:#fff; color:#233D8C; font-size:14px; font-family:inherit; }
+  .sel-perfil:disabled { opacity:.6; cursor:not-allowed; }
+  .ccard .sel-perfil { width:100%; margin-top:10px; }
+  .leg { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; margin-top:10px; }
+  .leg div { font-size:13px; color:#59637E; line-height:1.4; }
+  .leg b { color:#233D8C; }
+</style>
+</head>
+<body>
+<aside class="sb" id="sidebar" aria-label="Menu principal">
+  <div class="sb-top">
+    <div class="sb-brandrow">
+      <img class="sb-logo" src="/img/logo_branco.png" alt="PremCell">
+      <button type="button" class="sb-toggle" id="sbToggle" aria-label="Recolher menu" aria-expanded="true" aria-controls="sidebar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></svg>
+      </button>
+    </div>
+    <h1 class="sb-title">Gestão de usuários</h1>
+    <p class="desc">Aprove os cadastros novos e defina o perfil de acesso de cada usuário.</p>
+  </div>
+
+  <div class="sb-nav">
+    <p class="sb-cap">Navegação</p>
+    <nav id="navPrincipal" aria-label="Páginas"></nav>
+  </div>
+  <div class="sb-foot">
+    <div class="sb-acts acts">
+      <button type="button" class="ghost" data-tip="Atualizar" onclick="carregar()">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        <span class="sb-label">Atualizar</span>
+      </button>
+    </div>
+  </div>
+</aside>
+<div class="sb-overlay" id="sbOverlay"></div>
+<script src="/js/nav.js"></script>
+<div class="app-main">
+  <div class="mbar">
+    <button type="button" id="sbOpen" aria-label="Abrir menu" aria-expanded="false" aria-controls="sidebar">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <span class="mbar-title">Gestão de usuários</span>
+  </div>
+
+  <main><div id="app" aria-live="polite"></div></main>
+</div>
+
+<script src="/js/diretoria-comum.js"></script>
+<script src="/js/sidebar.js"></script>
+<script>
+let USERS = [];
+let GRID = null;
+
+const PERFIS = [
+  ['homologador', 'Homologador'],
+  ['gerente',     'Gerente'],
+  ['diretoria',   'Diretoria'],
+  ['admin',       'Administrador']
+];
+const perfilNome = p => (PERFIS.find(x => x[0] === p) || [p, p || '-'])[1];
+const optsPerfil = sel => PERFIS.map(([v, n]) => `<option value="${v}"${v === sel ? ' selected' : ''}>${n}</option>`).join('');
+
+const lista = L => (L && !Array.isArray(L)) ? (Array.isArray(L.data) ? L.data : (Array.isArray(L.rows) ? L.rows : [])) : (L || []);
+
+function meuUsuario() {
+  try {
+    const s = JSON.parse(localStorage.getItem('vd_sess') || sessionStorage.getItem('vd_sess') || 'null');
+    return String((s && s.usuario) || '').toLowerCase();
+  } catch (_) { return ''; }
+}
+
+function destruirGrid() { if (GRID) { GRID.destroy(); GRID = null; } }
+
+async function carregar() {
+  const token = tokenAdm();
+  if (!token) { el('app').innerHTML = '<div class="card"><p class="msg">Sessão sem token. Entre novamente.</p></div>'; return; }
+  el('app').innerHTML = '<div class="card"><p class="msg"><span class="spin"></span>Carregando...</p></div>';
+  try {
+    USERS = lista(await vdRpc('admin_usuarios_listar', { p_token: token }));
+    render();
+  } catch (e) {
+    el('app').innerHTML = `<div class="card"><p class="msg" style="color:var(--nok)">⚠ ${esc(e.message)}</p></div>`;
+  }
+}
+
+const pendentes = () => USERS.filter(u => u.status === 'PENDENTE');
+const gerenciados = () => USERS.filter(u => u.status !== 'PENDENTE');
+
+function montarGrid() {
+  destruirGrid();
+  const box = el('gridUsers');
+  if (!box) return;
+  const eu = meuUsuario();
+
+  GRID = agGrid.createGrid(box, {
+    columnDefs: [
+      { headerName: 'Usuário', field: 'nome', flex: 1.3, minWidth: 220, autoHeight: true,
+        valueGetter: p => p.data.nome + ' ' + p.data.usuario,
+        cellRenderer: p => `<div style="padding:8px 0"><b>${esc(p.data.nome || '-')}</b><div class="evid">${esc(p.data.usuario)}${p.data.usuario.toLowerCase() === eu ? ' (você)' : ''}</div></div>` },
+      { headerName: 'Perfil', width: 200, filter: false, sortable: false,
+        cellRenderer: p => {
+          const u = p.data, bloq = u.usuario.toLowerCase() === eu ? ' disabled' : '';
+          return `<select class="sel-perfil"${bloq} onchange="alterarPerfil('${esc(u.usuario)}', this.value)">${optsPerfil(u.perfil)}</select>`;
+        } },
+      { headerName: 'Situação', width: 140,
+        valueGetter: p => ({ ATIVO: 'Ativo', INATIVO: 'Inativo', RECUSADO: 'Recusado' }[p.data.status] || p.data.status),
+        cellRenderer: p => `<span class="pill ${p.data.status === 'ATIVO' ? 'ok' : 'nok'}">${esc(p.value)}</span>` },
+      { headerName: 'Cadastrado em', width: 170, sort: 'desc',
+        valueGetter: p => Date.parse(p.data.criado_em) || 0,
+        valueFormatter: p => p.data.criado_em ? fmtTs(p.data.criado_em) : '-' },
+      { headerName: 'Ação', width: 140, filter: false, sortable: false,
+        cellRenderer: p => {
+          const u = p.data;
+          if (u.usuario.toLowerCase() === eu) return '';
+          return u.ativo
+            ? `<button class="ghost sm" onclick="alternarAtivo('${esc(u.usuario)}', false)">Desativar</button>`
+            : `<button class="primary sm" onclick="alternarAtivo('${esc(u.usuario)}', true)">Ativar</button>`;
+        } }
+    ],
+    rowData: gerenciados(),
+    defaultColDef: { sortable: true, resizable: true, filter: true, suppressMovable: true },
+    suppressCellFocus: true,
+    pagination: true,
+    paginationPageSize: 25,
+    localeText: {
+      noRowsToShow: 'Nada para mostrar', page: 'Página', of: 'de', to: 'a', more: 'mais',
+      next: 'Próxima', previous: 'Anterior', first: 'Primeira', last: 'Última',
+      filterOoo: 'Filtrar...', contains: 'Contém', notContains: 'Não contém', equals: 'Igual',
+      notEqual: 'Diferente', startsWith: 'Começa com', endsWith: 'Termina com',
+      andCondition: 'E', orCondition: 'OU', applyFilter: 'Aplicar', resetFilter: 'Limpar', clearFilter: 'Limpar'
+    }
+  });
+}
+
+function render() {
+  const pend = pendentes();
+  el('app').innerHTML = `
+  <div class="card">
+    <div class="chead"><h2>Cadastros aguardando aprovação (${pend.length})</h2></div>
+    ${pend.length ? `<div class="cgrid">${pend.map((u, i) => `<div class="ccard nok">
+      <div class="nm">${esc(u.nome || '-')}</div>
+      <div class="sub">Usuário: ${esc(u.usuario)}</div>
+      <div class="evid" style="margin-top:4px">Solicitado em ${u.criado_em ? esc(fmtTs(u.criado_em)) : '-'}</div>
+      <select class="sel-perfil" id="perfilNovo_${i}" aria-label="Perfil de acesso">${optsPerfil('homologador')}</select>
+      <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+        <button class="primary sm" onclick="aprovar(${i})">✓ Aprovar</button>
+        <button class="ghost sm" onclick="recusar(${i})">✕ Recusar</button>
+      </div></div>`).join('')}</div>` : '<p class="msg">Nenhum cadastro aguardando aprovação. 🎉</p>'}
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="chead"><div><h2>Usuários (${gerenciados().length})</h2>
+      <p class="dica">Altere o perfil direto na lista. Usuários desativados não conseguem entrar no sistema.</p></div></div>
+    ${gerenciados().length
+      ? '<div id="gridUsers" class="ag-theme-quartz vd-grid" style="height:min(70vh,720px)"></div>'
+      : '<p class="msg">Nenhum usuário ainda.</p>'}
+    <div class="leg">
+      <div><b>Homologador</b><br>Cadastra equipes, valida documentos e lança custos.</div>
+      <div><b>Gerente</b><br>Aprova o custo de homologação e define o desconto.</div>
+      <div><b>Diretoria</b><br>Decide os casos com item Inapto e vê os relatórios.</div>
+      <div><b>Administrador</b><br>Acesso total, inclusive a esta página.</div>
+    </div>
+  </div>`;
+  montarGrid();
+}
+
+async function aprovar(i) {
+  const u = pendentes()[i]; if (!u) return;
+  const perfil = el('perfilNovo_' + i).value;
+  if (!confirm(`Aprovar ${u.nome} (${u.usuario}) com o perfil "${perfilNome(perfil)}"?`)) return;
+  try {
+    await vdRpc('admin_usuario_aprovar', { p_token: tokenAdm(), p_usuario: u.usuario, p_perfil: perfil });
+    await carregar();
+  } catch (e) { alert('Não foi possível aprovar: ' + e.message); }
+}
+
+async function recusar(i) {
+  const u = pendentes()[i]; if (!u) return;
+  if (!confirm(`Recusar o cadastro de ${u.nome} (${u.usuario})?`)) return;
+  try {
+    await vdRpc('admin_usuario_recusar', { p_token: tokenAdm(), p_usuario: u.usuario });
+    await carregar();
+  } catch (e) { alert('Não foi possível recusar: ' + e.message); }
+}
+
+async function alterarPerfil(usuario, perfil) {
+  try {
+    await vdRpc('admin_usuario_perfil', { p_token: tokenAdm(), p_usuario: usuario, p_perfil: perfil });
+    const u = USERS.find(x => x.usuario === usuario); if (u) u.perfil = perfil;
+  } catch (e) {
+    alert('Não foi possível alterar o perfil: ' + e.message);
+    carregar();
+  }
+}
+
+async function alternarAtivo(usuario, ativo) {
+  if (!confirm((ativo ? 'Ativar' : 'Desativar') + ' o usuário ' + usuario + '?')) return;
+  try {
+    await vdRpc('admin_usuario_ativo', { p_token: tokenAdm(), p_usuario: usuario, p_ativo: ativo });
+    await carregar();
+  } catch (e) { alert('Não foi possível atualizar: ' + e.message); }
+}
+
+carregar();
+</script>
+</body>
+</html>

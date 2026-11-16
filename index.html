@@ -22,22 +22,31 @@ body { min-height:100vh; display:flex; align-items:center; justify-content:cente
 .remember { display:flex; align-items:center; gap:7px; color:#59637E; }
 .remember input { accent-color:#2E4CA6; cursor:pointer; }
 .login-err { color:#C42B2B; background:#F8E1DF; border-radius:8px; padding:10px 12px; font-size:13px; margin-bottom:16px; }
+.login-ok { color:#15803d; background:#DCF3E4; border-radius:8px; padding:10px 12px; font-size:13px; margin-bottom:16px; }
 .login-button { width:100%; height:50px; border:none; border-radius:8px; background:#233D8C; color:#FFFFFF; font-size:15px; font-weight:700; cursor:pointer; transition:.2s ease; }
 .login-button:hover { background:#2E4CA6; transform:translateY(-1px); box-shadow:0 5px 15px rgba(35,61,140,.25); }
 .login-button:active { transform:translateY(0); }
 .login-button:disabled { opacity:.6; cursor:not-allowed; transform:none; box-shadow:none; }
+.switch { text-align:center; margin-top:20px; font-size:13px; color:#59637E; }
+.switch a { color:#2E4CA6; font-weight:700; cursor:pointer; text-decoration:none; }
+.switch a:hover { text-decoration:underline; }
 #apiStatus { text-align:center; font-size:12px; color:#6F7894; margin:-14px 0 18px; line-height:1.4; word-break:break-word; }
+[hidden] { display:none !important; }
 @media (max-width:480px) { .login-container { padding:30px 25px; } .title { font-size:22px; } }
 </style>
 </head>
 <body>
 <div class="login-container">
   <div class="logo-container"><img src="img/logo_azul.png" alt="Logo da Empresa"></div>
-  <h1 class="title">Bem-vindo</h1>
-  <p class="subtitle">Entre com seus dados para acessar o sistema</p>
+  <h1 class="title" id="tituloTela">Bem-vindo</h1>
+  <p class="subtitle" id="subtituloTela">Entre com seus dados para acessar o sistema</p>
 
   <p id="apiStatus">Verificando conexão com o servidor...</p>
 
+  <p class="login-ok" id="loginOk" role="status" hidden></p>
+  <p class="login-err" id="loginErr" role="alert" hidden></p>
+
+  <!-- LOGIN -->
   <form id="formLogin" novalidate>
     <div class="input-group">
       <label for="usuario">Usuário</label>
@@ -50,8 +59,30 @@ body { min-height:100vh; display:flex; align-items:center; justify-content:cente
     <div class="options">
       <label class="remember"><input type="checkbox" name="lembrar" id="lembrar"> Lembrar de mim</label>
     </div>
-    <p class="login-err" id="loginErr" role="alert" hidden></p>
     <button type="submit" class="login-button" id="btnEntrar">ENTRAR</button>
+    <p class="switch">Não tem conta? <a id="irCadastro">Cadastre-se</a></p>
+  </form>
+
+  <!-- CADASTRO -->
+  <form id="formCadastro" novalidate hidden>
+    <div class="input-group">
+      <label for="cadNome">Nome completo</label>
+      <input type="text" id="cadNome" placeholder="Digite seu nome completo" autocomplete="name" required>
+    </div>
+    <div class="input-group">
+      <label for="cadUsuario">Usuário</label>
+      <input type="text" id="cadUsuario" placeholder="Escolha um usuário (mín. 3 caracteres)" autocomplete="username" required>
+    </div>
+    <div class="input-group">
+      <label for="cadSenha">Senha</label>
+      <input type="password" id="cadSenha" placeholder="Mínimo 6 caracteres" autocomplete="new-password" required>
+    </div>
+    <div class="input-group">
+      <label for="cadSenha2">Confirmar senha</label>
+      <input type="password" id="cadSenha2" placeholder="Repita a senha" autocomplete="new-password" required>
+    </div>
+    <button type="submit" class="login-button" id="btnCadastrar">CRIAR CONTA</button>
+    <p class="switch">Já tem conta? <a id="irLogin">Entrar</a></p>
   </form>
 </div>
 
@@ -81,7 +112,7 @@ async function rpc(fn, args) {
   if (!r.ok) {
     const m = (j && (j.message || j.hint || j.details)) || ('HTTP ' + r.status);
     throw new Error(/Could not find the function/i.test(m)
-      ? 'A função de login não existe no Supabase. Rode o SQL do login (vd_login / vd_verificar).' : m);
+      ? 'A função não existe no Supabase. Rode o SQL do login/cadastro (vd_login / vd_verificar / vd_cadastrar).' : m);
   }
   return j;
 }
@@ -113,13 +144,30 @@ function limparSessao() { localStorage.removeItem('vd_sess'); sessionStorage.rem
   }
 })();
 
-function erro(msg) { const e = $('loginErr'); e.textContent = msg; e.hidden = !msg; }
+function erro(msg) { const e = $('loginErr'); e.textContent = msg || ''; e.hidden = !msg; }
+function sucesso(msg) { const e = $('loginOk'); e.textContent = msg || ''; e.hidden = !msg; }
 
+/* ---------- alternar entre login e cadastro ---------- */
+function mostrar(modo) {
+  const cad = modo === 'cadastro';
+  $('formLogin').hidden = cad;
+  $('formCadastro').hidden = !cad;
+  $('tituloTela').textContent = cad ? 'Criar conta' : 'Bem-vindo';
+  $('subtituloTela').textContent = cad
+    ? 'Preencha os dados para solicitar seu acesso'
+    : 'Entre com seus dados para acessar o sistema';
+  erro(''); sucesso('');
+  (cad ? $('cadNome') : $('usuario')).focus();
+}
+$('irCadastro').addEventListener('click', () => mostrar('cadastro'));
+$('irLogin').addEventListener('click', () => mostrar('login'));
+
+/* ---------- login ---------- */
 $('formLogin').addEventListener('submit', async ev => {
   ev.preventDefault();
   const usuario = $('usuario').value.trim(), senha = $('senha').value, lembrar = $('lembrar').checked;
   if (!usuario || !senha) { erro('Informe usuário e senha.'); return; }
-  erro('');
+  erro(''); sucesso('');
   const btn = $('btnEntrar');
   btn.disabled = true; btn.textContent = 'ENTRANDO...';
   try {
@@ -134,6 +182,37 @@ $('formLogin').addEventListener('submit', async ev => {
     erro(e.message);
     btn.disabled = false; btn.textContent = 'ENTRAR';
     $('senha').value = ''; $('senha').focus();
+  }
+});
+
+/* ---------- cadastro ---------- */
+$('formCadastro').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const nome = $('cadNome').value.trim().replace(/\s+/g, ' ');
+  const usuario = $('cadUsuario').value.trim().toLowerCase();
+  const senha = $('cadSenha').value;
+  const senha2 = $('cadSenha2').value;
+
+  if (nome.split(' ').length < 2) { erro('Informe o nome completo (nome e sobrenome).'); return; }
+  if (!/^[a-z0-9._-]{3,30}$/.test(usuario)) { erro('Usuário: 3 a 30 caracteres, só letras, números, ponto, hífen ou underline.'); return; }
+  if (senha.length < 6) { erro('A senha deve ter no mínimo 6 caracteres.'); return; }
+  if (senha !== senha2) { erro('As senhas não conferem.'); return; }
+
+  erro(''); sucesso('');
+  const btn = $('btnCadastrar');
+  btn.disabled = true; btn.textContent = 'CRIANDO...';
+  try {
+    const j = await rpc('vd_cadastrar', { p_nome: nome, p_usuario: usuario, p_senha: senha });
+    if (!j || !j.ok) throw new Error((j && j.erro) || 'Não foi possível criar a conta.');
+
+    $('formCadastro').reset();
+    mostrar('login');
+    $('usuario').value = usuario;
+    sucesso('Cadastro enviado! Seu acesso será liberado após aprovação do administrador.');
+  } catch (e) {
+    erro(e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'CRIAR CONTA';
   }
 });
 </script>

@@ -6,6 +6,9 @@
 <title>Aprovação do Gerente - PremCell</title>
 <link rel="stylesheet" href="/css/style.css">
 <link rel="stylesheet" href="/css/cards.css">
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.4/dist/ag-grid-community.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.4/styles/ag-grid.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.4/styles/ag-theme-quartz.css">
 <script src="/js/config.js"></script>
 <script src="/js/auth.js"></script>
 </head>
@@ -159,6 +162,65 @@ async function carregar() {
   carga = false; renderLista();
 }
 
+/* ===== AG GRID ===== */
+let GRID = null;
+function destruirGrid() { if (GRID) { GRID.destroy(); GRID = null; } }
+
+const LOCALE = {
+  noRowsToShow: 'Nada para mostrar', page: 'Página', of: 'de', to: 'a', more: 'mais',
+  next: 'Próxima', previous: 'Anterior', first: 'Primeira', last: 'Última',
+  filterOoo: 'Filtrar...', contains: 'Contém', notContains: 'Não contém', equals: 'Igual',
+  notEqual: 'Diferente', startsWith: 'Começa com', endsWith: 'Termina com',
+  greaterThan: 'Maior que', lessThan: 'Menor que', inRange: 'Entre',
+  andCondition: 'E', orCondition: 'OU', applyFilter: 'Aplicar', resetFilter: 'Limpar', clearFilter: 'Limpar'
+};
+
+const vgTxt = (principal, sub) =>
+  `<div class="vg-nome"><b>${esc(principal) || '—'}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</div>`;
+const nomeDe = n => n.tipo === 'EQUIPE' ? (n.equipe_nome || 'Equipe') : (n.nome || 'Colaborador');
+const subDe = n => n.tipo === 'EQUIPE' ? `${(n.cpfs || []).length} integrante(s)` : 'CPF ' + fmtCpf(n.cpf);
+const itensResumo = n => itensDe(n).map(i => i.item).filter(Boolean).join(', ');
+const decisaoTxt = n => {
+  const s = stDe(n);
+  if (s === 'APROVADA') return [metodoTxt(n), n.gerente_obs || ''];
+  if (s === 'RECUSADA') return ['Motivo: ' + (n.gerente_obs || '—'), ''];
+  return ['', ''];
+};
+
+function colDefs() {
+  return [
+    { headerName: 'Equipe / Colaborador', flex: 1.3, minWidth: 220,
+      valueGetter: p => nomeDe(p.data) + ' ' + subDe(p.data),
+      cellRenderer: p => vgTxt(nomeDe(p.data), subDe(p.data)) },
+    { headerName: 'Tipo', field: 'tipo', width: 140,
+      cellRenderer: p => `<span class="vg-b ${p.value === 'EQUIPE' ? 'aso' : 'trein'}">${p.value === 'EQUIPE' ? 'EQUIPE' : 'COLABORADOR'}</span>` },
+    { headerName: 'UF', field: 'estado_atuacao', width: 90 },
+    { headerName: 'Itens', flex: 1.2, minWidth: 200,
+      valueGetter: p => modoTxt(p.data) + ' ' + itensResumo(p.data),
+      tooltipValueGetter: p => itensResumo(p.data),
+      cellRenderer: p => vgTxt(modoTxt(p.data), itensResumo(p.data)) },
+    { headerName: 'Valor', width: 130, type: 'numericColumn', filter: 'agNumberColumnFilter',
+      valueGetter: p => totalDe(p.data),
+      cellRenderer: p => `<b>${esc(fmtBRL(p.value))}</b>` },
+    { headerName: 'Lançado em', width: 150, filter: false,
+      valueGetter: p => p.data.criado_em ? new Date(p.data.criado_em).getTime() : 0,
+      valueFormatter: p => fmtData(p.data.criado_em) },
+    { headerName: 'Status', width: 130,
+      valueGetter: p => stDe(p.data),
+      cellRenderer: p => { const [b, rot] = ST[p.value]; return `<span class="badge ${b}">${rot}</span>`; } },
+    { headerName: 'Decisão do gerente', flex: 1.2, minWidth: 220,
+      valueGetter: p => decisaoTxt(p.data).join(' '),
+      tooltipValueGetter: p => decisaoTxt(p.data).join('\n'),
+      cellRenderer: p => { const [a, b] = decisaoTxt(p.data); return a ? vgTxt(a, b) : '<span class="vg-p">—</span>'; } },
+    { headerName: '', width: 200, sortable: false, filter: false, resizable: false, pinned: 'right',
+      cellRenderer: p => stDe(p.data) === 'PENDENTE'
+        ? `<div class="vg-acoes">
+             <button class="primary sm" data-acao="APROVADA">✓ Aprovar</button>
+             <button class="danger sm" data-acao="RECUSADA">✗ Recusar</button></div>`
+        : `<div class="vg-acoes"><button class="ghost sm" data-acao="detalhes">Detalhes</button></div>` }
+  ];
+}
+
 function renderLista() {
   const c = k => L.filter(n => stDe(n) === k).length;
   const pend = L.filter(n => stDe(n) === 'PENDENTE');
@@ -170,42 +232,73 @@ function renderLista() {
     <div class="cnt nok"><b>${c('RECUSADA')}</b><span>Recusados</span></div>`;
 
   const box = el('lista');
-  if (carga && !L.length) { box.innerHTML = '<p class="msg"><span class="spin"></span>Carregando...</p>'; return; }
-  if (erro) { box.innerHTML = `<p class="msg" style="color:var(--nok)">⚠ ${esc(erro)}</p>`; return; }
+  if (carga && !L.length) { destruirGrid(); box.innerHTML = '<p class="msg"><span class="spin"></span>Carregando...</p>'; return; }
+  if (erro) { destruirGrid(); box.innerHTML = `<p class="msg" style="color:var(--nok)">⚠ ${esc(erro)}</p>`; return; }
+
   const q = norm(F.q);
   const X = L.filter(n => (!F.st || stDe(n) === F.st) && (!F.tipo || n.tipo === F.tipo) &&
     (!q || norm([n.equipe_nome, n.nome, n.cpf, n.observacao, n.estado_atuacao, itensDe(n).map(i => i.item + ' ' + (i.obs || '')).join(' ')].join(' ')).includes(q)));
-  if (!X.length) { box.innerHTML = '<p class="msg">Nenhum custo de homologação nesta visão.</p>'; return; }
-  box.innerHTML = `<div class="cgrid">` + X.map(cardNeg).join('') + `</div>`;
+
+  if (!X.length) { destruirGrid(); box.innerHTML = '<p class="msg">Nenhum custo de homologação nesta visão.</p>'; return; }
+
+  // grid já existe: só troca os dados (mantém ordenação e filtros de coluna)
+  if (GRID && el('vdGrid')) { GRID.setGridOption('rowData', X); return; }
+
+  destruirGrid();
+  box.innerHTML = '<div id="vdGrid" class="ag-theme-quartz vd-grid" style="height:min(70vh,720px)"></div>';
+  GRID = agGrid.createGrid(el('vdGrid'), {
+    columnDefs: colDefs(),
+    rowData: X,
+    rowHeight: 60,
+    headerHeight: 42,
+    domLayout: 'normal',
+    getRowId: p => String(p.data.id),
+    defaultColDef: { sortable: true, resizable: true, filter: true, suppressMovable: true },
+    rowClassRules: {
+      'lin-pend': p => stDe(p.data) === 'PENDENTE',
+      'lin-ok':   p => stDe(p.data) === 'APROVADA',
+      'lin-nok':  p => stDe(p.data) === 'RECUSADA'
+    },
+    suppressCellFocus: true,
+    tooltipShowDelay: 400,
+    pagination: X.length > 100,
+    paginationPageSize: 100,
+    localeText: LOCALE,
+    onRowClicked: e => {
+      const btn = e.event && e.event.target.closest('button[data-acao]');
+      const acao = btn && btn.dataset.acao;
+      if (acao === 'APROVADA' || acao === 'RECUSADA') return abrirDecisao(e.data.id, acao);
+      abrirDetalhes(e.data.id);
+    }
+  });
 }
 
-function cardNeg(n) {
-  const s = stDe(n), [bcls, rot, ccls] = ST[s];
-  const nome = n.tipo === 'EQUIPE' ? (n.equipe_nome || 'Equipe') : (n.nome || 'Colaborador');
-  const sub = n.tipo === 'EQUIPE'
-    ? `Equipe · ${(n.cpfs || []).length} integrante(s)`
-    : `CPF ${fmtCpf(n.cpf)}`;
-  let dec = '';
-  if (s === 'APROVADA') {
-    dec = `<div class="decbox ok">✓ Gerente aprovou em ${esc(fmtData(n.gerente_decidido_em))}${n.gerente_nome ? ' · ' + esc(n.gerente_nome) : ''}
+/* ===== Modal de detalhes (substitui o conteúdo do card) ===== */
+function decHtml(n) {
+  const s = stDe(n);
+  if (s === 'APROVADA') return `<div class="decbox ok">✓ Gerente aprovou em ${esc(fmtData(n.gerente_decidido_em))}${n.gerente_nome ? ' · ' + esc(n.gerente_nome) : ''}
 💳 Método de desconto: ${esc(metodoTxt(n))}${n.metodo_desconto_obs ? '\n' + esc(n.metodo_desconto_obs) : ''}${n.gerente_obs ? '\n📝 ' + esc(n.gerente_obs) : ''}</div>`;
-  } else if (s === 'RECUSADA') {
-    dec = `<div class="decbox nok">✗ Gerente recusou em ${esc(fmtData(n.gerente_decidido_em))}${n.gerente_nome ? ' · ' + esc(n.gerente_nome) : ''}
+  if (s === 'RECUSADA') return `<div class="decbox nok">✗ Gerente recusou em ${esc(fmtData(n.gerente_decidido_em))}${n.gerente_nome ? ' · ' + esc(n.gerente_nome) : ''}
 📝 Motivo: ${esc(n.gerente_obs || '—')}</div>`;
-  }
-  return `<div class="ccard static ${ccls}">
-    <div class="hd"><div><div class="nm">${esc(nome)}</div>
-      <div class="sub">${esc(sub)}${n.estado_atuacao ? ' · ' + esc(n.estado_atuacao) : ''}</div></div>
-      <span class="badge ${bcls}">${rot}</span></div>
-    <div class="val">${esc(fmtBRL(totalDe(n)))}</div>
+  return '';
+}
+
+function abrirDetalhes(id) {
+  const n = L.find(x => String(x.id) === String(id)); if (!n) return;
+  const s = stDe(n), [bcls, rot] = ST[s];
+  ovAbrir(`
+    <div class="chead"><div><h2>${esc(nomeDe(n))}</h2>
+      <div class="sub">${esc(subDe(n))}${n.estado_atuacao ? ' · ' + esc(n.estado_atuacao) : ''}</div></div>
+      <button class="ghost sm" onclick="fecharOv()">Fechar</button></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:12px 0">
+      <div class="val">${esc(fmtBRL(totalDe(n)))}</div><span class="badge ${bcls}">${rot}</span></div>
     ${itensHtml(n)}
     <div class="sub">${esc(modoTxt(n))} · lançado em ${esc(fmtData(n.criado_em))}${n.atualizado_em ? ' · editado em ' + esc(fmtData(n.atualizado_em)) : ''}</div>
-    ${n.observacao ? `<div class="sub" style="white-space:pre-wrap">📝 Homologador: ${esc(n.observacao)}</div>` : ''}
-    ${dec}
-    ${s === 'PENDENTE' ? `<div class="acoes">
+    ${n.observacao ? `<div class="sub" style="white-space:pre-wrap;margin-top:8px">📝 Homologador: ${esc(n.observacao)}</div>` : ''}
+    ${decHtml(n)}
+    ${s === 'PENDENTE' ? `<div class="acoes" style="margin-top:12px">
       <button class="primary sm" onclick="abrirDecisao('${esc(n.id)}','APROVADA')">✓ Aprovar</button>
-      <button class="danger sm" onclick="abrirDecisao('${esc(n.id)}','RECUSADA')">✗ Recusar</button></div>` : ''}
-  </div>`;
+      <button class="danger sm" onclick="abrirDecisao('${esc(n.id)}','RECUSADA')">✗ Recusar</button></div>` : ''}`);
 }
 
 let DEC = null;

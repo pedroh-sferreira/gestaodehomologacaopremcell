@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Custo Homologação - PremCell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="/css/cards.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-grid.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-theme-quartz.css">
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/dist/ag-grid-community.min.js"></script>
+<script src="/js/auth.js"></script>
+<style>
+  .cxf{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px 12px;margin-bottom:12px}
+  .cxf label{display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:3px}
+  .cxf input,.cxf select{width:100%}
+  .cxf .span2{grid-column:span 2}
+  .cxbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
+  .cxbar .grow{flex:1}
+  .cxnum{font-variant-numeric:tabular-nums;text-align:right}
+  .cxln{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.35}
+</style>
+</head>
+<body>
+<aside class="sb" id="sidebar" aria-label="Menu principal">
+  <div class="sb-top">
+    <div class="sb-brandrow">
+      <img class="sb-logo" src="/img/logo_branco.png" alt="PremCell">
+      <button type="button" class="sb-toggle" id="sbToggle" aria-label="Recolher menu" aria-expanded="true" aria-controls="sidebar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></svg>
+      </button>
+    </div>
+    <h1 class="sb-title">Custo Homologação</h1>
+    <p class="desc">Custos lançados pelos homologadores por equipe e colaborador, com a decisão do gerente.</p>
+  </div>
+  <div class="sb-nav">
+    <p class="sb-cap">Navegação</p>
+    <nav id="navPrincipal" aria-label="Páginas"></nav>
+  </div>
+  <div class="sb-foot">
+    <div class="sb-acts acts">
+      <button type="button" class="ghost" data-tip="Atualizar" onclick="cxCarregar()">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        <span class="sb-label">Atualizar</span>
+      </button>
+    </div>
+  </div>
+</aside>
+<div class="sb-overlay" id="sbOverlay"></div>
+<script src="/js/nav.js"></script>
+<div class="app-main">
+  <div class="mbar">
+    <button type="button" id="sbOpen" aria-label="Abrir menu" aria-expanded="false" aria-controls="sidebar">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <span class="mbar-title">Custo Homologação</span>
+  </div>
+  <main><div id="app" aria-live="polite"></div></main>
+</div>
+
+<script src="/js/diretoria-comum.js"></script>
+<script src="/js/sidebar.js"></script>
+<script>
+const CX_RPC_LISTAR = 'painel_negociacao_listar';
+
+const CX_VAZIO = { q:'', de:'', ate:'', st:'', tipo:'', ger:'' };
+let CX = { ...CX_VAZIO }, CX_ROWS = [], CX_GRID = null, CX_ERRO = '', CX_TB;
+
+const cxMoeda = n => (Number(n) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const cxNorm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+const cxDia = s => String(s || '').slice(0, 10);
+const cxV = v => { const x = typeof v === 'number' ? v : parseFloat(String(v == null ? '' : v).replace(',', '.')); return isFinite(x) ? x : 0; };
+const cxNum = v => { const n = parseFloat(String(v ?? '').replace(/\./g, '').replace(',', '.')); return isFinite(n) ? n : null; };
+const cxLista = L => Array.isArray(L) ? L : (L && Array.isArray(L.data) ? L.data : (L && Array.isArray(L.rows) ? L.rows : []));
+const cxUniq = campo => [...new Set(CX_ROWS.map(r => r[campo]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
+
+function cxStatus(s) {
+  s = String(s || '').toUpperCase();
+  return s.startsWith('APROV') ? 'APROVADO' : (s.startsWith('RECUS') || s.startsWith('REPROV')) ? 'REPROVADO' : 'AGUARDANDO';
+}
+const CX_ROT = { AGUARDANDO: 'Aguardando gerente', APROVADO: 'Aprovado', REPROVADO: 'Recusado' };
+const CX_PILL = { AGUARDANDO: 'at', APROVADO: 'ok', REPROVADO: 'nok' };
+const CX_TIPO = { EQUIPE: 'Equipe', COLABORADOR: 'Colaborador' };
+const CX_MET = { PARCELADO: 'Parcelado', A_VISTA: 'À vista' };
+
+function cxMetodo(r, valor) {
+  if (!r.metodo_desconto) return '';
+  let t = CX_MET[r.metodo_desconto] || r.metodo_desconto;
+  const q = Math.floor(cxV(r.metodo_parcelas));
+  if (r.metodo_desconto === 'PARCELADO' && q >= 2) t += ' em ' + q + 'x de ' + cxMoeda(valor / q);
+  else if (r.metodo_desconto === 'A_VISTA') t += ' (' + cxMoeda(valor) + ')';
+  return t + (r.metodo_desconto_obs ? ' — ' + r.metodo_desconto_obs : '');
+}
+
+function cxMapear(r) {
+  const itens = (Array.isArray(r.itens) ? r.itens : []).map(i => ({ item: i.item || '', valor: cxV(i.valor), obs: i.obs || '' }));
+  const tipo = String(r.tipo || '').toUpperCase();
+  const eqp = tipo === 'EQUIPE';
+  let valor = cxV(r.valor);
+  if (!(valor > 0)) valor = Math.round(itens.reduce((s, i) => s + i.valor, 0) * 100) / 100;
+  const criado = r.criado_em || '';
+  return {
+    id: r.id,
+    tipo,
+    alvo: (eqp ? r.equipe_nome : r.nome) || '',
+    cpf: eqp ? '' : String(r.cpf || '').replace(/\D/g, ''),
+    integrantes: eqp ? (Array.isArray(r.cpfs) ? r.cpfs.length : 0) : 0,
+    uf: r.estado_atuacao || '',
+    itens, obs: r.observacao || '',
+    valor,
+    status: cxStatus(r.status_gerente),
+    criado, atualizado: r.atualizado_em || '', mes: cxDia(criado).slice(0, 7),
+    decidido: r.gerente_decidido_em || '', decididoPor: r.gerente_nome || '',
+    motivo: r.gerente_obs || '',
+    metodo: cxMetodo(r, valor)
+  };
+}
+
+async function cxCarregar() {
+  const token = tokenAdm();
+  if (!token) { el('app').innerHTML = '<div class="card"><p class="msg">Sessão sem token. Entre novamente.</p></div>'; return; }
+  if (!CX_ROWS.length) el('app').innerHTML = '<div class="card"><p class="msg"><span class="spin"></span>Carregando...</p></div>';
+  try {
+    CX_ERRO = '';
+    CX_ROWS = cxLista(await vdRpc(CX_RPC_LISTAR, { p_token: token })).map(cxMapear)
+      .sort((a, b) => String(b.criado).localeCompare(String(a.criado)));
+  } catch (e) { CX_ERRO = e.message; CX_ROWS = []; }
+  cxRender();
+}
+
+function cxFiltrar() {
+  const q = cxNorm(CX.q);
+  return CX_ROWS.filter(r =>
+    (!CX.st || r.status === CX.st) && (!CX.tipo || r.tipo === CX.tipo) && (!CX.ger || r.decididoPor === CX.ger) &&
+    (!CX.de || cxDia(r.criado) >= CX.de) && (!CX.ate || cxDia(r.criado) <= CX.ate) &&
+    (!q || cxNorm([r.alvo, r.cpf, r.uf, r.obs, r.motivo, r.decididoPor, r.itens.map(i => i.item + ' ' + i.obs).join(' ')].join(' ')).includes(q)));
+}
+
+const cxOpts = (campo, sel, rot) => '<option value="">Todos</option>' +
+  cxUniq(campo).map(v => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(rot ? (rot[v] || v) : v)}</option>`).join('');
+
+function cxRender() {
+  if (CX_GRID) { CX_GRID.destroy(); CX_GRID = null; }
+  const f = (id, rot, chave, tipo, extra) => `<div ${extra && extra.includes('span2') ? 'class="span2"' : ''}><label for="${id}">${rot}</label>
+    <input id="${id}" type="${tipo || 'text'}" value="${esc(CX[chave])}" ${extra || ''} oninput="CX.${chave}=this.value;cxBusca()"></div>`;
+  el('app').innerHTML = `
+  ${CX_ERRO ? `<div class="card"><p class="msg" style="color:var(--nok)">⚠ ${esc(CX_ERRO)}</p>
+    <p class="dica">Confira se a função <b>${CX_RPC_LISTAR}</b> existe no Supabase e se o seu perfil tem permissão.</p></div>` : ''}
+  <div id="cxCont"></div>
+  <div class="card">
+    <div class="cxf">
+      ${f('cxQ', 'Busca', 'q', 'text', 'placeholder="Equipe, colaborador, CPF, item, observação..."')}
+      ${f('cxDe', 'Lançado de', 'de', 'date')}
+      ${f('cxAte', 'Lançado até', 'ate', 'date')}
+      <div><label for="cxSt">Status do gerente</label><select id="cxSt" onchange="CX.st=this.value;cxAplicar()">
+        <option value="">Todos</option>${Object.entries(CX_ROT).map(([k, v]) => `<option value="${k}" ${CX.st === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div><label for="cxTipo">Tipo</label><select id="cxTipo" onchange="CX.tipo=this.value;cxAplicar()">${cxOpts('tipo', CX.tipo, CX_TIPO)}</select></div>
+      <div><label for="cxGer">Gerente</label><select id="cxGer" onchange="CX.ger=this.value;cxAplicar()">${cxOpts('decididoPor', CX.ger)}</select></div>
+    </div>
+    <div class="cxbar">
+      <button class="ghost sm" onclick="cxLimpar()">Limpar filtros</button>
+      <span class="grow"></span><span class="msg" id="cxQtd"></span>
+    </div>
+    <div id="cxGrid" class="ag-theme-quartz vd-grid" style="height:min(70vh,720px)"></div>
+  </div>`;
+  cxAplicar();
+}
+
+function cxBusca() { clearTimeout(CX_TB); CX_TB = setTimeout(cxAplicar, 200); }
+function cxLimpar() { CX = { ...CX_VAZIO }; cxRender(); }
+
+function cxAplicar() {
+  const L = cxFiltrar(), soma = st => L.filter(r => !st || r.status === st).reduce((s, r) => s + Math.round(r.valor * 100), 0) / 100;
+  const n = st => L.filter(r => r.status === st).length;
+  el('cxCont').innerHTML = `<div class="counters">
+    <div class="cnt"><b>${cxMoeda(soma())}</b><span>Total filtrado (${L.length})</span></div>
+    <div class="cnt pend"><b>${cxMoeda(soma('AGUARDANDO'))}</b><span>Aguardando gerente (${n('AGUARDANDO')})</span></div>
+    <div class="cnt ok"><b>${cxMoeda(soma('APROVADO'))}</b><span>Aprovado (${n('APROVADO')})</span></div>
+    <div class="cnt nok"><b>${cxMoeda(soma('REPROVADO'))}</b><span>Recusado (${n('REPROVADO')})</span></div></div>`;
+  const q = el('cxQtd'); if (q) q.textContent = L.length + ' de ' + CX_ROWS.length + ' lançamentos';
+  cxGrid(L);
+}
+
+const CX_LOCALE = {
+  noRowsToShow: 'Nenhum lançamento encontrado', page: 'Página', of: 'de', to: 'a', more: 'mais',
+  next: 'Próxima', previous: 'Anterior', first: 'Primeira', last: 'Última',
+  filterOoo: 'Filtrar...', contains: 'Contém', notContains: 'Não contém', equals: 'Igual',
+  notEqual: 'Diferente', startsWith: 'Começa com', endsWith: 'Termina com',
+  greaterThan: 'Maior que', lessThan: 'Menor que', inRange: 'Entre',
+  andCondition: 'E', orCondition: 'OU', applyFilter: 'Aplicar', resetFilter: 'Limpar', clearFilter: 'Limpar'
+};
+const cxPill = st => `<span class="pill ${CX_PILL[st]}">${CX_ROT[st]}</span>`;
+const cxVal = p => `<b class="cxnum" style="display:block">${cxMoeda(p.value)}</b>`;
+const cxLn = t => `<div class="cxln" title="${esc(t)}">${esc(t)}</div>`;
+
+function cxColsDetalhe() {
+  return [
+    { headerName: 'Lançado em', width: 150, sort: 'desc', valueGetter: p => Date.parse(p.data.criado) || 0, valueFormatter: p => fmtTs(p.data.criado) },
+    { headerName: 'Equipe / Colaborador', flex: 1.3, minWidth: 220,
+      valueGetter: p => p.data.alvo + ' ' + p.data.cpf,
+      cellRenderer: p => { const r = p.data;
+        const sub = r.tipo === 'EQUIPE' ? (r.integrantes + ' integrante(s)') : (r.cpf ? 'CPF ' + fmtCpf(r.cpf) : '');
+        return `<div class="vg-nome"><b>${r.tipo === 'EQUIPE' ? '👥 ' : '👤 '}${esc(r.alvo) || '—'}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</div>`; } },
+    { headerName: 'UF', field: 'uf', width: 80 },
+    { headerName: 'Itens', flex: 1.5, minWidth: 260,
+      valueGetter: p => p.data.itens.map(i => i.item + ' ' + i.obs).join(' ') + ' ' + p.data.obs,
+      cellRenderer: p => { const it = p.data.itens;
+        if (!it.length) return p.data.obs ? cxLn('📝 ' + p.data.obs) : '';
+        return it.slice(0, 3).map(i => cxLn(i.item + ' · ' + cxMoeda(i.valor) + (i.obs ? ' · ' + i.obs : ''))).join('') +
+          (it.length > 3 ? cxLn('+ ' + (it.length - 3) + ' item(ns)') : ''); } },
+    { headerName: 'Total', field: 'valor', width: 130, type: 'numericColumn', filter: 'agNumberColumnFilter', cellRenderer: cxVal },
+    { headerName: 'Gerente', field: 'status', width: 160, valueFormatter: p => CX_ROT[p.value], cellRenderer: p => cxPill(p.value) },
+    { headerName: 'Método de desconto', field: 'metodo', flex: 1, minWidth: 200, cellRenderer: p => p.value ? cxLn('💳 ' + p.value) : '' },
+    { headerName: 'Decisão do gerente', minWidth: 210, flex: 1, valueGetter: p => p.data.motivo, sortable: false,
+      cellRenderer: p => p.data.decidido
+        ? cxLn((p.data.status === 'APROVADO' ? 'Aprovou' : 'Recusou') + ' em ' + fmtTs(p.data.decidido) + (p.data.decididoPor ? ' · ' + p.data.decididoPor : '')) +
+          (p.data.motivo ? cxLn('📝 ' + p.data.motivo) : '') : '' }
+  ];
+}
+
+function cxGrid(L) {
+  if (CX_GRID) { CX_GRID.destroy(); CX_GRID = null; }
+  CX_GRID = agGrid.createGrid(el('cxGrid'), {
+    columnDefs: cxColsDetalhe(),
+    rowData: L,
+    rowHeight: 76, headerHeight: 42,
+    defaultColDef: { sortable: true, resizable: true, filter: true, suppressMovable: true },
+    suppressCellFocus: true,
+    pagination: true, paginationPageSize: 50,
+    localeText: CX_LOCALE
+  });
+}
+
+function cxCsv() {
+  const L = cxFiltrar();
+  const cab = ['Lançado em', 'Tipo', 'Equipe/Colaborador', 'CPF', 'Integrantes', 'UF', 'Itens', 'Observação', 'Total', 'Status gerente', 'Método de desconto', 'Decidido em', 'Decidido por', 'Observação do gerente'];
+  const cel = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const linhas = L.map(r => [r.criado, CX_TIPO[r.tipo] || r.tipo, r.alvo, r.cpf, r.integrantes || '', r.uf,
+    r.itens.map(i => i.item + ' ' + cxMoeda(i.valor) + (i.obs ? ' (' + i.obs + ')' : '')).join(' | '), r.obs,
+    String(r.valor).replace('.', ','), CX_ROT[r.status], r.metodo, r.decidido, r.decididoPor, r.motivo].map(cel).join(';'));
+  const blob = new Blob(['\ufeff' + [cab.map(cel).join(';'), ...linhas].join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'custo_homologacao_' + new Date().toISOString().slice(0, 10) + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+cxCarregar();
+</script>
+</body>
+</html>

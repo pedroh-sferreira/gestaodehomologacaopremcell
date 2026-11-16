@@ -751,7 +751,6 @@ const NEG_GER = {
 };
 const NEG_PILL = { PENDENTE: 'pend', APROVADA: 'ok', RECUSADA: 'nok' };
 let NEGS = [], NEG_ERRO = '', NEG_ALVO = null, NEG_EDIT = null, NEG_BACK = null;
-const NEG_F = { q: '', tipo: '', ger: '' };
 
 const fmtBRL = n => Number(n).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const negData = s => s ? new Date(s).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '—';
@@ -864,41 +863,6 @@ function negTabela(L, comAlvo) {
       <td>${negGerBadge(n)}${negGerInfo(n)}</td>
       <td><button type="button" class="negBtnG negSm" onclick="negEditar('${esc(n.id)}')">✎ Editar</button></td></tr>`).join('') + `</table></div>`;
 }
-async function abrirNegociacoes() {
-  negOverlay('Custo Homologação', '<p class="msg"><span class="spin"></span>Carregando...</p>', 'Custos lançados por equipe e colaborador');
-  await negCarregar();
-  NEG_BACK = abrirNegociacoes;
-  negOverlay('Custo Homologação', `
-    <div class="negHint">ⓘ Aprovação feita pelo gerente em <a href="gerente.html">gerente.html</a></div>
-    <div class="negToolbar">
-      <input type="text" id="negQ" placeholder="Buscar por equipe, colaborador, CPF, item ou observação..." value="${esc(NEG_F.q)}" oninput="NEG_F.q=this.value;negFiltrar()">
-      <select id="negT" onchange="NEG_F.tipo=this.value;negFiltrar()">
-        ${[['', 'Equipes e colaboradores'], ['EQUIPE', 'Só equipes'], ['COLABORADOR', 'Só colaboradores']].map(([v, t]) => `<option value="${v}" ${NEG_F.tipo === v ? 'selected' : ''}>${t}</option>`).join('')}
-      </select>
-      <select id="negG" onchange="NEG_F.ger=this.value;negFiltrar()">
-        ${[['', 'Todos os status do gerente'], ['PENDENTE', 'Aguardando o gerente'], ['APROVADA', 'Gerente aprovou'], ['RECUSADA', 'Gerente recusou']].map(([v, t]) => `<option value="${v}" ${NEG_F.ger === v ? 'selected' : ''}>${t}</option>`).join('')}
-      </select>
-    </div>
-    <div id="negTab"></div>`, 'Custos lançados por equipe e colaborador');
-  negFiltrar();
-  negRefrescar();
-}
-function negFiltrar() {
-  const box = document.getElementById('negTab'); if (!box) return;
-  if (NEG_ERRO) { box.innerHTML = `<div class="negErr">⚠ ${esc(NEG_ERRO)}</div>`; return; }
-  const q = norm(NEG_F.q);
-  const L = NEGS.filter(n => (!NEG_F.tipo || n.tipo === NEG_F.tipo) && (!NEG_F.ger || negStatus(n) === NEG_F.ger) &&
-    (!q || norm([n.equipe_nome, n.nome, n.cpf, n.observacao, negItens(n).map(i => i.item + ' ' + (i.obs || '')).join(' ')].join(' ')).includes(q)));
-  const tot = L.reduce((s, n) => s + Math.round(negTotal(n) * 100), 0) / 100;
-  const c = k => L.filter(n => negStatus(n) === k).length;
-  box.innerHTML = L.length ? `<div class="negKpis">
-      <div class="negKpi"><span>Total lançado</span><b>${esc(fmtBRL(tot))}</b></div>
-      <div class="negKpi"><span>Aguardando gerente</span><b>${c('PENDENTE')}</b></div>
-      <div class="negKpi"><span>Aprovados</span><b>${c('APROVADA')}</b></div>
-      <div class="negKpi"><span>Recusados</span><b>${c('RECUSADA')}</b></div></div>${negTabela(L, true)}`
-    : '<div class="negEmpty">Nenhum custo encontrado.</div>';
-}
-
 function negLinha(i) {
   i = i || {};
   const v = negNum(i.valor);
@@ -1119,11 +1083,6 @@ async function negSalvar() {
   .negPill.nok{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca}
   .negLn{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 
-  .negToolbar{display:grid;grid-template-columns:1fr 210px 230px;gap:10px}
-  .negKpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
-  .negKpi{padding:12px 14px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.04)}
-  .negKpi span{display:block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#64748b;white-space:nowrap}
-  .negKpi b{display:block;margin-top:4px;font-size:20px;font-weight:800;color:#0f172a;font-variant-numeric:tabular-nums;white-space:nowrap}
 
   .negTblWrap{border:1px solid #e2e8f0;border-radius:12px;overflow:auto;background:#fff}
   .negTbl{border-collapse:separate;border-spacing:0;width:100%;font-size:13px;color:#0f172a}
@@ -1137,7 +1096,6 @@ async function negSalvar() {
 
   @media (max-width:720px){
     .negMHead{padding:14px 16px}.negMBody{padding:16px}
-    .negToolbar{grid-template-columns:1fr}.negKpis{grid-template-columns:repeat(2,minmax(0,1fr))}
   }`;
   document.head.appendChild(st);
 })();
@@ -1169,17 +1127,6 @@ function negInjetar() {
         b.onclick = () => negAbrir(tipo, key);
         hd.prepend(b);
       }
-    }
-  }
-  if (view === 'home') {
-    const row = app.querySelector('.row.noprint');
-    if (row && !row.querySelector('.negListBtn')) {
-      const b = document.createElement('button');
-      b.type = 'button'; b.className = 'ghost negListBtn negX';
-      const pend = NEGS.filter(n => negStatus(n) === 'PENDENTE').length;
-      b.textContent = '💰 Custo Homologação' + (NEGS.length ? ' (' + NEGS.length + (pend ? ' · ' + pend + ' aguardando' : '') + ')' : '');
-      b.onclick = abrirNegociacoes;
-      row.appendChild(b);
     }
   }
 }

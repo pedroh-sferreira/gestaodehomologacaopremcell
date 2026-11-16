@@ -91,17 +91,28 @@ async function carregarParceiros() {
   if (view === 'home') render();
 }
 
-function render() { if (view === 'form') renderForm(); else renderHome(); window.scrollTo({ top: 0 }); }
+function render() {
+  if (view === 'form') { destruirGrid(); renderForm(); } else renderHome();
+  window.scrollTo({ top: 0 });
+}
 function irHome() { view = 'home'; P = null; render(); }
-function novoParceiro(tipo) { P = { id: null, tipo, valores: {} }; _cnpjBusca = ''; view = 'form'; render(); }
-function editar(id) { const p = PARC.find(x => x.id === id); if (!p) return; P = { ...p, valores: { ...(p.valores || {}) }, razao: p.razao_social }; _cnpjBusca = digitos(p.cnpj); view = 'form'; render(); }
+function novoParceiro(tipo) { P = { id: null, tipo, valores: {}, treinamentos: {} }; _cnpjBusca = ''; view = 'form'; render(); }
+function editar(id) {
+  const p = PARC.find(x => x.id === id); if (!p) return;
+  P = { ...p, valores: { ...(p.valores || {}) }, treinamentos: { ...(p.treinamentos || {}) }, razao: p.razao_social };
+  _cnpjBusca = digitos(p.cnpj); view = 'form'; render();
+}
 
 let _tb;
 function buscaDebounce() { clearTimeout(_tb); _tb = setTimeout(renderLista, 150); }
 
 function renderHome() {
   const ufs = [...new Set(PARC.map(p => p.uf).filter(Boolean))].sort();
-  el('app').innerHTML = `<div id="cont"></div>
+  el('app').innerHTML = `<div class="hbar">
+      <button type="button" class="primary" onclick="novoParceiro('ASO')">＋ Clínica de ASO</button>
+      <button type="button" class="primary" onclick="novoParceiro('TREINAMENTO')">＋ Centro de treinamento</button>
+    </div>
+    <div id="cont"></div>
     <div class="card">
       <div class="hf3">
         <input type="text" placeholder="Buscar por nome, cidade, CNPJ, CEP, contato ou e-mail..." value="${esc(F.q)}" oninput="F.q=this.value;buscaDebounce()">
@@ -120,11 +131,109 @@ function renderHome() {
   renderLista();
 }
 
+let GRID = null;
+function destruirGrid() { if (GRID) { GRID.destroy(); GRID = null; } }
+
+const vgTxt = (principal, sub) => `<div class="vg-nome"><b>${esc(principal) || '—'}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</div>`;
+// aceita número ou texto ("50,00", "1.190,00"); devolve null se não for número válido
+const numVal = v => {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'number' ? v : parseBRL(v);
+  return Number.isFinite(n) ? n : null;
+};
+// compacto: 50 → "50", 4390 → "4.390", 50.5 → "50,50"
+const fmtCurto = n => Number.isInteger(n) ? n.toLocaleString('pt-BR') : fmtNum(n);
+const vgDin = v => { const n = numVal(v); return n == null ? '<span class="vg-p">—</span>' : `<b style="font-size:12px">${fmtNum(n)}</b>`; };
+
+// ---- Treinamentos: dias e datas por NR ----
+function dataBR(s) { return String(s || '').split('-').reverse().join('/'); }
+function diasTxt(d, k) {
+  const o = ((d && d.treinamentos) || {})[k];
+  if (!o || !o.dias) return '';
+  const dt = (o.datas || []).map(dataBR).join(', ');
+  return `<small title="${esc(dt)}" style="display:block;font-size:10px;color:#64748b">${o.dias} dia(s)</small>`;
+}
+function datasInputs(k, n, datas) {
+  n = Math.min(parseInt(n, 10) || 0, 31); datas = datas || [];
+  return Array.from({ length: n }, (_, i) =>
+    `<label>Dia ${i + 1}<input type="date" data-nr="${k}" value="${esc(datas[i] || '')}"></label>`).join('');
+}
+function treinExtra(k, o) {
+  o = o || {};
+  return `<div class="trn">
+    <label for="d_${k}">Dias de treinamento</label>
+    <input type="number" min="0" max="31" id="d_${k}" value="${esc(o.dias || '')}" oninput="gerarDatas('${k}')">
+    <div id="dts_${k}" class="trn-datas">${datasInputs(k, o.dias, o.datas)}</div></div>`;
+}
+function gerarDatas(k) {
+  const box = el('dts_' + k);
+  const atuais = [...box.querySelectorAll('input')].map(i => i.value);
+  box.innerHTML = datasInputs(k, el('d_' + k).value, atuais);
+}
+
+function colDefsParceiros() {
+  const base = [
+    { headerName: 'Parceiro', field: 'nome', flex: 1.3, minWidth: 200,
+      cellRenderer: p => {
+        const rz = p.data.razao_social;
+        const sub = p.data.cnpj ? 'CNPJ ' + fmtCnpj(p.data.cnpj) : (rz && norm(rz) !== norm(p.data.nome) ? rz : '');
+        return vgTxt(p.data.nome, sub);
+      } },
+    { headerName: 'Tipo', field: 'tipo', width: 130,
+      valueFormatter: p => p.value === 'ASO' ? 'ASO' : 'TREINAMENTO',
+      cellRenderer: p => `<span class="vg-b ${p.value === 'ASO' ? 'aso' : 'trein'}">${p.value === 'ASO' ? 'ASO' : 'TREINAMENTO'}</span>` },
+    { headerName: 'Cidade/UF', valueGetter: p => (p.data.cidade || '') + '/' + (p.data.uf || ''), width: 160,
+      cellRenderer: p => `<span class="vg-cid">${esc(p.value)}</span>` },
+    { headerName: 'Contato', valueGetter: p => [p.data.contato, p.data.email].filter(Boolean).join(' · '), flex: 1, minWidth: 190,
+      cellRenderer: p => vgTxt(fmtTel(p.data.contato) || p.data.contato, p.data.email) }
+  ];
+
+  let valores;
+  if (F.tipo) {
+    valores = TIPOS[F.tipo].campos.map(([k, rot, ab]) => ({
+      headerName: ab, headerTooltip: rot, width: 88, type: 'numericColumn', filter: 'agNumberColumnFilter',
+      valueGetter: p => numVal((p.data.valores || {})[k]),
+      cellClass: 'vg-c', headerClass: 'vg-hc',
+      cellRenderer: p => vgDin(p.value) + diasTxt(p.data, k)
+    }));
+  } else {
+    valores = [{
+      headerName: 'Valores', flex: 1.8, minWidth: 280, sortable: false, filter: false,
+      valueGetter: p => Object.values(p.data.valores || {}).filter(x => numVal(x) != null).length,
+      autoHeight: true,
+      cellRenderer: p => {
+        const t = TIPOS[p.data.tipo], v = p.data.valores || {}, trn = p.data.treinamentos || {};
+        const pills = t.campos
+          .map(([k, , ab]) => [ab, numVal(v[k]), k])
+          .filter(([, n]) => n != null)
+          .map(([ab, n, k]) => {
+            const d = (trn[k] || {}).dias;
+            return `<span class="vg-p ok">${esc(ab)} ${fmtCurto(n)}${d ? ' · ' + d + 'd' : ''}</span>`;
+          }).join('');
+        return `<div class="vg-pills" style="padding:8px 0">${pills || '<span class="vg-p">sem valores</span>'}</div>`;
+      }
+    }];
+  }
+
+  return [
+    ...base,
+    ...valores,
+    { headerName: 'Total', field: 'total', width: 110, type: 'numericColumn', filter: 'agNumberColumnFilter',
+      valueGetter: p => numVal(p.data.total),
+      cellRenderer: p => p.value == null ? '' : `<b>${fmtMoeda(p.value)}</b>` },
+    { headerName: 'Pgto', field: 'pgto', width: 110 },
+    { headerName: '', width: 150, sortable: false, filter: false, resizable: false,
+      cellRenderer: () => `<div class="vg-acoes">
+        <button class="ghost sm" data-acao="editar">✎ Editar</button>
+        <button class="ghost sm" data-acao="excluir">🗑</button></div>` }
+  ];
+}
+
 function renderLista() {
   const box = el('lista'), cont = el('cont');
   if (!box) return;
-  if (carga === 'carregando' && !PARC.length) { cont.innerHTML = ''; box.innerHTML = '<p class="msg"><span class="spin"></span>Carregando parceiros...</p>'; return; }
-  if (carga === 'erro' && !PARC.length) { cont.innerHTML = ''; box.innerHTML = `<p class="msg" style="color:var(--nok)">⚠ ${esc(erroMsg)}</p>`; return; }
+  if (carga === 'carregando' && !PARC.length) { destruirGrid(); cont.innerHTML = ''; box.innerHTML = '<p class="msg"><span class="spin"></span>Carregando parceiros...</p>'; return; }
+  if (carga === 'erro' && !PARC.length) { destruirGrid(); cont.innerHTML = ''; box.innerHTML = `<p class="msg" style="color:var(--nok)">⚠ ${esc(erroMsg)}</p>`; return; }
 
   const cidades = new Set(PARC.map(p => norm(p.cidade) + '/' + p.uf));
   cont.innerHTML = `<div class="counters">
@@ -136,26 +245,38 @@ function renderLista() {
   const q = norm(F.q);
   const L = PARC.filter(p => (!F.tipo || p.tipo === F.tipo) && (!F.uf || p.uf === F.uf) &&
     (!q || norm([p.nome, p.razao_social, p.cidade, p.cnpj, p.contato, p.email, p.cep].join(' ')).includes(q)));
+
+  destruirGrid();
   if (!L.length) { box.innerHTML = '<p class="msg">Nenhum parceiro encontrado.</p>'; return; }
 
-  box.innerHTML = '<div class="cgrid">' + L.map(p => {
-    const t = TIPOS[p.tipo], v = p.valores || {};
-    const pills = t.campos.filter(([k]) => v[k] != null)
-      .map(([k, , ab]) => `<span class="pill ok">${esc(ab)} ${fmtNum(v[k])}</span>`).join('');
-    return `<div class="ccard ${p.tipo === 'ASO' ? 'ok' : 'pend'}" onclick="editar('${esc(p.id)}')">
-      <div class="hd"><div><div class="nm">${esc(p.nome)}</div>
-        <div class="sub">${esc(p.cidade)}/${esc(p.uf)}${p.cnpj ? ' · CNPJ ' + esc(fmtCnpj(p.cnpj)) : ''}</div></div>
-        <span class="tipotag ${p.tipo === 'TREINAMENTO' ? 't' : ''}">${p.tipo === 'ASO' ? 'ASO' : 'TREINAMENTO'}</span></div>
-      ${p.contato || p.email ? `<div class="contato">${[p.contato, p.email].filter(Boolean).map(esc).join(' · ')}</div>` : ''}
-      ${p.total != null ? `<div class="valor">${esc(t.totalRot)}: ${fmtMoeda(p.total)}${p.pgto ? ` <span class="mini">· ${esc(p.pgto)}</span>` : ''}</div>`
-                        : (p.pgto ? `<div class="mini">${esc(t.pgto)}: ${esc(p.pgto)}</div>` : '')}
-      <div class="pills">${pills || '<span class="pill">sem valores</span>'}</div>
-      <div class="acoes"><button class="ghost sm" onclick="event.stopPropagation();editar('${esc(p.id)}')">✎ Editar</button>
-        <button class="ghost sm" onclick="event.stopPropagation();excluir('${esc(p.id)}')">🗑 Excluir</button></div>
-    </div>`;
-  }).join('') + '</div>';
+  box.innerHTML = '<div id="vdGrid" class="ag-theme-quartz vd-grid" style="height:min(70vh,720px)"></div>';
+  GRID = agGrid.createGrid(el('vdGrid'), {
+    columnDefs: colDefsParceiros(),
+    rowData: L,
+    rowHeight: 60,
+    headerHeight: 42,
+    domLayout: 'normal',
+    getRowId: p => String(p.data.id),
+    defaultColDef: { sortable: true, resizable: true, filter: true, suppressMovable: true },
+    rowClassRules: { 'lin-ok': p => p.data.tipo === 'ASO', 'lin-pend': p => p.data.tipo !== 'ASO' },
+    suppressCellFocus: true,
+    pagination: L.length > 100,
+    paginationPageSize: 100,
+    localeText: {
+      noRowsToShow: 'Nada para mostrar', page: 'Página', of: 'de', to: 'a', more: 'mais',
+      next: 'Próxima', previous: 'Anterior', first: 'Primeira', last: 'Última',
+      filterOoo: 'Filtrar...', contains: 'Contém', notContains: 'Não contém', equals: 'Igual',
+      notEqual: 'Diferente', startsWith: 'Começa com', endsWith: 'Termina com',
+      greaterThan: 'Maior que', lessThan: 'Menor que', inRange: 'Entre',
+      andCondition: 'E', orCondition: 'OU', applyFilter: 'Aplicar', resetFilter: 'Limpar', clearFilter: 'Limpar'
+    },
+    onRowClicked: e => {
+      const btn = e.event && e.event.target.closest('button[data-acao]');
+      if (btn) { btn.dataset.acao === 'excluir' ? excluir(e.data.id) : editar(e.data.id); return; }
+      editar(e.data.id);
+    }
+  });
 }
-
 function campo(id, rot, valor, extra) {
   return `<div class="field ${extra?.cls || ''}"><label for="${id}">${esc(rot)}${extra?.req ? ' *' : ''}</label>
     <input type="text" id="${id}" value="${esc(valor)}" ${extra?.attr || ''} oninput="this.dataset.auto=''${extra?.on ? ';' + extra.on : ''}"></div>`;
@@ -163,7 +284,8 @@ function campo(id, rot, valor, extra) {
 function renderForm() {
   const t = TIPOS[P.tipo], dv = P.valores || {};
   const dinheiro = t.campos.map(([k, rot]) => `<div class="field"><label for="v_${k}">${esc(rot)}</label>
-      <div class="money"><span>R$</span><input type="text" inputmode="decimal" id="v_${k}" placeholder="0,00" value="${dv[k] != null ? fmtNum(dv[k]) : ''}" oninput="somar()" onblur="fmtMoney(this)"></div></div>`).join('');
+      <div class="money"><span>R$</span><input type="text" inputmode="decimal" id="v_${k}" placeholder="0,00" value="${dv[k] != null ? fmtNum(dv[k]) : ''}" oninput="somar()" onblur="fmtMoney(this)"></div>
+      ${P.tipo === 'TREINAMENTO' ? treinExtra(k, (P.treinamentos || {})[k]) : ''}</div>`).join('');
 
   el('app').innerHTML = `<div class="card">
     <div class="chead"><div><h2>${P.id ? 'Editar' : 'Novo'} — ${esc(t.rotulo)}</h2>
@@ -314,13 +436,21 @@ async function buscarCep(d) {
 async function salvar() {
   const v = {};
   TIPOS[P.tipo].campos.forEach(([k]) => { const n = parseBRL(el('v_' + k).value); if (n != null) v[k] = n; });
+
+  const trn = {};
+  if (P.tipo === 'TREINAMENTO') TIPOS.TREINAMENTO.campos.forEach(([k]) => {
+    const dias = parseInt(el('d_' + k).value, 10) || 0;
+    const datas = [...el('dts_' + k).querySelectorAll('input')].map(i => i.value).filter(Boolean);
+    if (dias || datas.length) trn[k] = { dias, datas };
+  });
+
   const cnpj = digitos(el('f_cnpj').value);
   const corpo = {
     tipo: P.tipo, cnpj: cnpj || null, razao_social: P.razao || null,
     nome: el('f_nome').value.trim(), cidade: el('f_cidade').value.trim(), uf: el('f_uf').value,
     contato: el('f_contato').value.trim() || null, email: el('f_email').value.trim().toLowerCase() || null,
     cep: digitos(el('f_cep').value) || null, endereco: el('f_endereco').value.trim() || null, pgto: el('f_pgto').value.trim() || null,
-    total: parseBRL(el('f_total').value), valores: v, observacoes: el('f_obs').value.trim() || null,
+    total: parseBRL(el('f_total').value), valores: v, treinamentos: trn, observacoes: el('f_obs').value.trim() || null,
     atualizado_em: new Date().toISOString()
   };
   if (!corpo.nome || !corpo.cidade || !corpo.uf) { alert('Preencha ' + TIPOS[P.tipo].nome + ', cidade e UF.'); return; }

@@ -5,7 +5,6 @@ const DOCS = [
   { id:'nr10',      ab:'NR10',     nome:'NR 10 (Trabalho em Eletricidade)',   dica:'40 h, validade de 2 anos, 4 assinaturas (gov.br ou tudo manual).' },
   { id:'nr06',      ab:'NR06',     nome:'NR 06 (Uso de EPI\'s)',              dica:'4 h, validade de 2 anos, 2 assinaturas (gov.br ou tudo manual).' },
   { id:'ficha_epi', ab:'EPI',      nome:'Ficha de EPI',                       dica:'Função igual ao ASO, CNPJ, razão social e campos de assinatura.' },
-  { id:'contrato',  ab:'Contrato', nome:'Contrato + Anexo / Cartão CNPJ',     dica:'Datas, razão social, CPF/CNPJ e assinaturas.' },
   { id:'rg',        ab:'RG',       nome:'RG',  pessoal:true, dica:'Enviado pelo técnico (sem análise por IA).' },
   { id:'cnh',       ab:'CNH',      nome:'CNH', pessoal:true, dica:'Enviado pelo técnico (sem análise por IA).' }
 ];
@@ -20,7 +19,7 @@ const CAMPOS = [
 
 let HIST = [], COLABS = [], EQUIPES = [], DIRET_HOM = [], carga = 'carregando', erroMsg = '';
 let view = 'home', cur = null, curEq = null;
-const F = { q:'', st:'', modo:'colab' };  
+const F = { q:'', st:'', modo:'colab' };
 let ENV = novoENV();
 
 const el = id => document.getElementById(id);
@@ -47,6 +46,118 @@ function lerEqLocais() {
   try { const a = JSON.parse(localStorage.getItem(LS_EQ) || '[]'); return Array.isArray(a) ? a : []; } catch (_) { return []; }
 }
 let EQ_LOCAIS = lerEqLocais();
+
+/* ===== Exclusão: envios, equipes e colaboradores ===== */
+const LS_OCULTOS = 'vd_ocultos_v1';
+let OCULTOS = (() => { try { return new Set(JSON.parse(localStorage.getItem(LS_OCULTOS) || '[]')); } catch (_) { return new Set(); } })();
+const salvarOcultos = () => { try { localStorage.setItem(LS_OCULTOS, JSON.stringify([...OCULTOS])); } catch (_) {} };
+
+// Remove arquivos pela API do Storage (apagar por SQL deixaria o arquivo físico órfão).
+// As RPCs de exclusão devolvem os caminhos; aqui eles são apagados do bucket.
+async function removerArquivosStorage(paths) {
+  const lista = (Array.isArray(paths) ? paths : []).filter(p => typeof p === 'string' && p);
+  const falhas = [];
+  for (const p of lista) {
+    try {
+      const url = `${VDSB.SUPABASE_URL}/storage/v1/object/${BUCKET_DOCS}/${p.split('/').map(encodeURIComponent).join('/')}`;
+      const r = await fetch(url, { method: 'DELETE', headers: { apikey: VDSB.SUPABASE_ANON_KEY } });
+      if (!r.ok) falhas.push(p + ' (' + r.status + ')');
+    } catch (e) { falhas.push(p + ' (' + e.message + ')'); }
+  }
+  if (falhas.length) {
+    console.warn('Arquivos que não saíram do Storage:', falhas);
+    toastDl('⚠ ' + falhas.length + ' arquivo(s) não foram removidos do Storage (veja o console). O registro foi excluído.', true);
+  }
+}
+
+// RG/CNH do técnico: RPC painel_docs_tecnicos_excluir; demais documentos: RPC analise_excluir
+async function apagarRegistro(a) {
+  const tec = a.origem === 'tecnico';
+  const paths = await vdRpc(tec ? 'painel_docs_tecnicos_excluir' : 'analise_excluir', {
+    p_token: tokenAdm(),
+    p_id: tec ? String(a.id).replace(/^tec_/, '') : String(a.id)
+  });
+  await removerArquivosStorage(paths);
+}
+
+async function excluirEnvio(id) {
+  const a = HIST.find(x => x.id === id); if (!a) return;
+  if (!await confirmarAcao('Excluir registro',
+      `Excluir "${a.documento}" (${a.arquivo})? O arquivo e a análise serão removidos e isso não pode ser desfeito.`,
+      'Excluir')) return;
+  try {
+    await apagarRegistro(a);
+    HIST = HIST.filter(x => x.id !== id);
+    COLABS = agrupar(); guardarHistLocal(); render();
+    toastDl('Registro excluído.', true);
+  } catch (e) { toastDl('Não foi possível excluir: ' + e.message, true); }
+}
+
+async function excluirEnviosColab(key) {
+  const g = COLABS.find(c => c.key === key); if (!g || !g.envios.length) return;
+  if (!await confirmarAcao('Excluir todos os envios',
+      `Excluir os ${g.envios.length} envio(s) de ${g.nome || 'este colaborador'}? Não pode ser desfeito.`,
+      'Excluir tudo')) return;
+  const falhas = [];
+  for (const a of g.envios.slice()) {
+    try { await apagarRegistro(a); HIST = HIST.filter(x => x.id !== a.id); }
+    catch (e) { falhas.push(a.documento + ': ' + e.message); }
+  }
+  COLABS = agrupar(); guardarHistLocal(); render();
+  if (falhas.length) alert('Alguns registros não foram excluídos:\n' + falhas.join('\n'));
+  else toastDl('Envios excluídos.', true);
+}
+
+async function excluirEquipe(key) {
+  const eq = EQUIPES.find(e => e.key === key); if (!eq) return;
+  if (!await confirmarAcao('Excluir equipe',
+      `Excluir "${eqTitulo(eq)}"? Os integrantes não são apagados: só saem da equipe e mantêm seus documentos.`,
+      'Excluir equipe')) return;
+  try {
+    const cpfs = eq.membros.map(m => m.cpf).filter(c => c.length === 11);
+    if (cpfs.length) await vdRpc('painel_equipe_excluir', { p_token: tokenAdm(), p_cpfs: cpfs });
+    if (EQ_LOCAIS.some(q => q.key === key)) excluirEquipeLocal(key);
+    else { EQUIPES = EQUIPES.filter(e => e.key !== key); COLABS = agrupar(); guardarHistLocal(); }
+    toastDl('Equipe excluída.', true);
+    curEq = null; view = 'home'; render();
+  } catch (e) { toastDl('Não foi possível excluir a equipe: ' + e.message, true); }
+}
+
+async function excluirColaborador(key) {
+  const g = COLABS.find(c => c.key === key); if (!g || g.sem) return;
+  if (!await confirmarAcao('Excluir colaborador',
+      `Excluir ${g.nome || 'este colaborador'}${g.cpf ? ' (CPF ' + fmtCpf(g.cpf) + ')' : ''}? Serão removidos ${g.envios.length} envio(s) e o vínculo com equipes. Não pode ser desfeito.`,
+      'Excluir colaborador')) return;
+
+  const falhas = [];
+  for (const a of g.envios.slice()) {
+    try { await apagarRegistro(a); HIST = HIST.filter(x => x.id !== a.id); }
+    catch (e) { falhas.push(a.documento + ': ' + e.message); }
+  }
+  if (falhas.length) {
+    COLABS = agrupar(); guardarHistLocal(); render();
+    alert('Alguns envios não foram excluídos, então o colaborador foi mantido:\n' + falhas.join('\n'));
+    return;
+  }
+
+  try {
+    if (g.cpf) await removerArquivosStorage(await vdRpc('painel_colaborador_excluir', { p_token: tokenAdm(), p_cpf: g.cpf }));
+  } catch (e) {
+    // Ex.: colaborador é líder de uma equipe com outros integrantes -> a RPC recusa
+    toastDl('⚠ ' + e.message, true);
+    COLABS = agrupar(); guardarHistLocal(); render();
+    return;
+  }
+  EQ_LOCAIS.filter(q => (q.membros || []).some(m => digitos(m.cpf) === g.cpf))
+           .forEach(q => removerMembroLocal(q.key, g.cpf));
+
+  if (g.cpf) { OCULTOS.add(g.cpf); salvarOcultos(); }
+
+  COLABS = agrupar(); guardarHistLocal();
+  toastDl('Colaborador excluído.', true);
+  cur = null; view = (curEq && EQUIPES.some(e => e.key === curEq)) ? 'equipe' : 'home'; render();
+}
+
 /* Equipes de homologação: a fonte da verdade é o Supabase (tabela hm_equipes).
    O localStorage é só cache offline. */
 let _eqSnap = {};                       // key -> JSON já gravado no servidor
@@ -85,8 +196,8 @@ async function carregarEqServidor() {
     const loc = EQ_LOCAIS.find(x => x.key === sq.key);
     const js = JSON.stringify(sq);
     if (!loc) { EQ_LOCAIS.push(sq); _eqSnap[sq.key] = js; return; }
-    const sujo = _eqSnap[sq.key] !== undefined && JSON.stringify(loc) !== _eqSnap[sq.key];  
-    if (!sujo) {                         
+    const sujo = _eqSnap[sq.key] !== undefined && JSON.stringify(loc) !== _eqSnap[sq.key];
+    if (!sujo) {
       Object.keys(loc).forEach(k => delete loc[k]);
       Object.assign(loc, sq);
       _eqSnap[sq.key] = js;
@@ -125,13 +236,13 @@ function criarEquipeLocal(nome) {
 mesclarEquipes = function (base) {
   const dbs = (base || []).filter(e => !e.local);
   const sobram = [];
-  const novos = [];                                
+  const novos = [];
 
   dbs.forEach(e => {
     const cpfs = e.membros.map(m => digitos(m.cpf)).filter(c => c.length === 11);
     const q = EQ_LOCAIS.find(x => (x.membros || []).some(m => cpfs.includes(digitos(m.cpf))));
-    if (!q) { sobram.push(e); return; }              
-    e.membros.forEach(m => {                
+    if (!q) { sobram.push(e); return; }
+    e.membros.forEach(m => {
       const c = digitos(m.cpf);
       if (c.length !== 11 || q.membros.some(x => digitos(x.cpf) === c)) return;
       q.membros.push({ cpf: c, nome: m.nome || '' });
@@ -141,7 +252,7 @@ mesclarEquipes = function (base) {
 
   if (novos.length) {
     salvarEqLocais();
-    if (tokenAdm()) {                           
+    if (tokenAdm()) {
       Promise.all(novos.map(({ q, m }) => hmRegistrarApt(m, q.apt, q.apt_motivo, q.apt_anexo, q.uf).catch(() => {})))
         .then(hmCarregar).then(() => { if (view === 'equipe') render(); });
     }
@@ -151,11 +262,12 @@ mesclarEquipes = function (base) {
 function addMembroLocal(key, nome, cpf) {
   const q = EQ_LOCAIS.find(x => x.key === key); cpf = digitos(cpf);
   if (!q || cpf.length !== 11) return false;
+  if (OCULTOS.delete(cpf)) salvarOcultos();      // quem foi reenviado volta a aparecer
   const ex = q.membros.find(m => digitos(m.cpf) === cpf);
   if (ex) { if (!ex.nome && nome) ex.nome = nome; }
   else {
     q.membros.push({ cpf, nome: nome || '' });
-    if (!q.liderCpf) q.liderCpf = cpf; 
+    if (!q.liderCpf) q.liderCpf = cpf;
   }
   salvarEqLocais(); recarregarEquipes();
   return true;
@@ -210,7 +322,7 @@ async function lerAssinaturasPdf(file) {
       const bytes = new Uint8Array(hex.length >> 1);
       for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
       const s = new TextDecoder('utf-8').decode(bytes);
-      const r2 = /([A-ZÀ-Ý][A-ZÀ-Ý' ]{4,}?):(\d{11})/g;  
+      const r2 = /([A-ZÀ-Ý][A-ZÀ-Ý' ]{4,}?):(\d{11})/g;
       let n;
       while ((n = r2.exec(s))) {
         if (!vistos.has(n[2])) { vistos.add(n[2]); signatarios.push({ nome:n[1].trim(), cpf:n[2] }); }
@@ -287,7 +399,7 @@ async function buscarHomologados() {
   let L = await vdRpc('diretoria_listar', { p_token: token, p_status: 'DECIDIDAS' });
   if (L && !Array.isArray(L)) L = Array.isArray(L.data) ? L.data : (Array.isArray(L.rows) ? L.rows : []);
   return (L || [])
-    .filter(h => !h.decisao || String(h.decisao).toUpperCase().startsWith('HOMOLOG'))   
+    .filter(h => !h.decisao || String(h.decisao).toUpperCase().startsWith('HOMOLOG'))
     .map(h => ({ cpf: digitos(h.cpf), nome: h.nome || '', decidido_em: h.decidido_em || '' }))
     .filter(h => h.cpf.length === 11);
 }
@@ -313,14 +425,14 @@ function lerHistLocal() {
     if (o && Array.isArray(o.homol)) DIRET_HOM = o.homol;
     hist = o && Array.isArray(o.hist) ? o.hist : [];
   } catch (_) {}
-  EQUIPES = mesclarEquipes(EQUIPES);  
+  EQUIPES = mesclarEquipes(EQUIPES);
   return hist;
 }
 let _carregandoHist = false;
 async function carregarHist() {
   if (_carregandoHist) return;
   _carregandoHist = true;
-  const tinha = COLABS.length > 0;  
+  const tinha = COLABS.length > 0;
   if (!tinha) { carga = 'carregando'; if (view !== 'envio') render(); }
   let avisoPessoais = '';
   try {
@@ -347,8 +459,10 @@ async function carregarHist() {
   }
   _carregandoHist = false;
 }
+const ehDocAso = a => !!a && (a.doc_id === 'aso' || norm(a.documento) === 'aso');
 let _tb;
 function buscaDebounce() { clearTimeout(_tb); _tb = setTimeout(renderLista, 150); }
+
 function agrupar() {
   const ord = [...HIST].sort((a, b) => String(b.data_hora).localeCompare(String(a.data_hora)));
   const grupos = [], porCpf = {}, porNome = {};
@@ -357,7 +471,10 @@ function agrupar() {
     const cpf = digitos(a.cpf), nm = norm(a.nome), cpfOk = cpf.length === 11;
     let g = null;
     if (!cpfOk && !nm) {
-      if (!sem) { sem = { sem:true, key:'sem', nome:'', cpf:'', razao:'', envios:[], docs:{} }; }
+      if (!sem) {
+        sem = { sem:true, key:'sem', nome:'', cpf:'', razao:'', envios:[], docs:{},
+                st:[], nOk:0, nNok:0, nPend:0, est:'pend' };
+      }
       g = sem;
     } else {
       if (cpfOk) g = porCpf[cpf] || null;
@@ -367,12 +484,14 @@ function agrupar() {
       if (g.cpf) porCpf[g.cpf] = g;
       if (nm) porNome[nm] = g;
       if (!g.nome && a.nome) g.nome = a.nome;
-      if (!g.razao && a.razao_social) g.razao = a.razao_social;
+      // Razão social/CNPJ do colaborador vêm exclusivamente do ASO.
+      if (!g.razao && a.razao_social && ehDocAso(a)) g.razao = a.razao_social;
     }
     g.envios.push(a);
     if (!g.docs[a.documento]) g.docs[a.documento] = a;
   });
   EQUIPES.forEach(eq => eq.membros.forEach(m => {
+    if (OCULTOS.has(m.cpf)) return;
     if (m.cpf.length === 11 && !porCpf[m.cpf]) {
       const g = { sem:false, nome:m.nome || '', cpf:m.cpf, razao:'', envios:[], docs:{} };
       grupos.push(g); porCpf[m.cpf] = g;
@@ -380,7 +499,7 @@ function agrupar() {
       porCpf[m.cpf].nome = m.nome;
     }
   }));
-  DIRET_HOM.forEach(h => {
+  DIRET_HOM.filter(h => !OCULTOS.has(h.cpf)).forEach(h => {
     let g = porCpf[h.cpf];
     if (!g) {
       g = { sem:false, nome:h.nome, cpf:h.cpf, razao:'', envios:[], docs:{} };
@@ -403,6 +522,7 @@ function agrupar() {
 }
 
 function render() {
+  if (view !== 'home') destruirGrid();
   if (view === 'colab') renderColab();
   else if (view === 'equipe') renderEquipe();
   else if (view === 'envio') renderEnvio();
@@ -417,11 +537,10 @@ function abrirEquipe(k) { curEq = k; cur = null; F.modo = 'equipe'; view = 'equi
 
 function renderHome() {
   el('app').innerHTML = `<div id="cont"></div>
-    <div class="card">
       <div class="row noprint" style="margin:0 0 14px;gap:8px;flex-wrap:wrap">
         <button class="${F.modo === 'colab' ? 'primary' : 'ghost'}" onclick="F.modo='colab';renderHome()">👤 Colaboradores</button>
         <button class="${F.modo === 'equipe' ? 'primary' : 'ghost'}" onclick="F.modo='equipe';renderHome()">👥 Equipes (${EQUIPES.length})</button>
-        <button class="primary" onclick="baixarOk()">⬇ Baixar todos os OK (.zip)</button>
+        ${F.modo === 'equipe' ? '<button class="primary" onclick="baixarOk()">⬇ Baixar todos os OK (.zip)</button>' : ''}
       </div>
       <div class="hf2">
         <input type="text" id="fQ" placeholder="${F.modo === 'equipe' ? 'Buscar por equipe, líder, integrante ou CPF...' : 'Buscar por nome, CPF ou razão social...'}" value="${esc(F.q)}" oninput="F.q=this.value;buscaDebounce()">
@@ -434,6 +553,173 @@ function renderHome() {
     </div>`;
   renderLista();
 }
+
+/* ===== AG Grid ===== */
+let GRID = null;
+
+function destruirGrid() { if (GRID) { GRID.destroy(); GRID = null; } }
+
+const rBadge = (cls, txt) => `<span class="badge ${cls}">${txt}</span>`;
+const rBarra = (ok, nok, total) => {
+  const t = total || 1;
+  return `<div class="mini"><i class="g" style="width:${Math.round(ok / t * 100)}%"></i><i class="r" style="width:${Math.round(nok / t * 100)}%"></i></div>`;
+};
+const rPill = (ab, st) => `<span class="pill ${st === 'OK' ? 'ok' : st === 'NOK' ? 'nok' : st === 'ATENCAO' ? 'at' : st === 'RELEVADO' ? 'rel' : ''}">${esc(ab)}</span>`;
+
+function montarGrid(colDefs, rowData, onAbrir, vazioMsg) {
+  const box = el('lista');
+  destruirGrid();
+  if (!rowData.length) { box.innerHTML = `<p class="msg">${vazioMsg}</p>`; return; }
+  box.innerHTML = '<div id="vdGrid" class="ag-theme-quartz vd-grid" style="height:min(70vh,720px)"></div>';
+  GRID = agGrid.createGrid(el('vdGrid'), {
+    columnDefs: colDefs,
+    rowHeight: 60,
+    headerHeight: 42,
+    rowData,
+    defaultColDef: { sortable: true, resizable: true, filter: true, floatingFilter: false, suppressMovable: true },
+    rowClassRules: {
+      'lin-ok':   p => p.data.est === 'ok',
+      'lin-nok':  p => p.data.est === 'nok',
+      'lin-pend': p => p.data.est === 'pend'
+    },
+    animateRows: false,
+    suppressCellFocus: true,
+    pagination: rowData.length > 100,
+    paginationPageSize: 100,
+    localeText: {
+      noRowsToShow: 'Nada para mostrar', page: 'Página', of: 'de', to: 'a', more: 'mais',
+      next: 'Próxima', previous: 'Anterior', first: 'Primeira', last: 'Última',
+      filterOoo: 'Filtrar...', contains: 'Contém', notContains: 'Não contém', equals: 'Igual',
+      notEqual: 'Diferente', startsWith: 'Começa com', endsWith: 'Termina com',
+      andCondition: 'E', orCondition: 'OU', applyFilter: 'Aplicar', resetFilter: 'Limpar', clearFilter: 'Limpar'
+    },
+    onRowClicked: e => onAbrir(e.data)
+  });
+}
+
+/* ---- Colaboradores ---- */
+function linhaColab(g) {
+  const st = g.st || [];
+  const nRel = st.filter(s => s === 'RELEVADO').length;
+  const row = { _g: g, est: g.est || 'pend', sem: g.sem, nome: g.sem ? 'Sem colaborador identificado' : (g.nome || 'Nome não legível'),
+    cpf: g.cpf || '', razao: g.razao || '', nOk: g.nOk || 0, nNok: g.nNok || 0, nPend: g.nPend || 0, nRel,
+    homol: g.homol ? 'Sim' : '', envios: (g.envios || []).length };
+  DOCS.forEach((d, k) => { row['d_' + d.id] = g.sem ? '' : (st[k] || 'PENDENTE'); });
+  return row;
+}
+
+function colDefsColab() {
+  const docCols = DOCS.map(d => ({
+  headerName: d.ab, headerTooltip: d.nome, field: 'd_' + d.id, width: 84,
+  cellClass: 'vg-c', headerClass: 'vg-hc',
+  cellRenderer: p => {
+    const s = p.value;
+    if (!s) return '';
+    if (s === 'PENDENTE') return rPill('—', '');
+    return rPill(s === 'NOK' ? '✗' : s === 'RELEVADO' ? '⚖' : '✓', s);
+    }
+  }));
+  return [
+  { headerName: 'Colaborador', field: 'nome', flex: 1, minWidth: 230, pinned: 'left',
+    cellRenderer: p => p.data.sem ? '<i>Sem colaborador identificado</i>'
+      : `<div class="vg-nome"><b>${esc(p.value)}</b><small>${p.data.cpf ? 'CPF ' + esc(fmtCpf(p.data.cpf)) : 'CPF não identificado'}</small></div>` },
+    { headerName: 'Razão social', field: 'razao', minWidth: 160, flex: 1 },
+    { headerName: 'Status', field: 'est', width: 120,
+      valueFormatter: p => p.data.sem ? '' : ({ ok: 'COMPLETO', nok: 'COM NOK', pend: 'PENDENTE' }[p.value] || ''),
+      cellRenderer: p => p.data.sem ? '' : rBadge(p.value === 'ok' ? 'b-ok' : p.value === 'nok' ? 'b-nok' : 'b-warn',
+        p.value === 'ok' ? 'COMPLETO' : p.value === 'nok' ? 'COM NOK' : 'PENDENTE') },
+    { headerName: 'Progresso', width: 170, sortable: true, comparator: (a, b, na, nb) => na.data.nOk - nb.data.nOk,
+      valueGetter: p => p.data.nOk,
+      cellRenderer: p => p.data.sem ? '' :
+        `<div style="width:100%">${rBarra(p.data.nOk, p.data.nNok, DOCS.length)}
+         <small style="color:#64748b">${p.data.nOk}/${DOCS.length} OK${p.data.nNok ? ' · ' + p.data.nNok + ' NOK' : ''}${p.data.nPend ? ' · ' + p.data.nPend + ' pend.' : ''}</small></div>` },
+    ...docCols,
+    { headerName: 'Homolog.', field: 'homol', width: 100, cellRenderer: p => p.value ? rBadge('b-ok', 'AUTORIZADO') : '' }
+  ];
+}
+
+function renderLista() {
+  const box = el('lista'), cont = el('cont');
+  if (!box) return;
+  if (carga === 'carregando' && !COLABS.length) { destruirGrid(); cont.innerHTML = ''; box.innerHTML = '<p class="msg"><span class="spin"></span>Carregando do banco de dados...</p>'; return; }
+  if (carga === 'erro' && !COLABS.length) { destruirGrid(); cont.innerHTML = ''; box.innerHTML = `<p class="msg" style="color:var(--nok)">⚠ ${esc(erroMsg)}</p>`; return; }
+
+  if (F.modo === 'equipe') { renderEquipes(cont, box); return; }
+
+  const pessoas = COLABS.filter(g => !g.sem);
+  cont.innerHTML = `<div class="counters">
+    <div class="cnt"><b>${pessoas.length}</b><span>Colaboradores</span></div>
+    <div class="cnt ok"><b>${pessoas.filter(g => g.est === 'ok').length}</b><span>Documentação completa</span></div>
+    <div class="cnt nok"><b>${pessoas.filter(g => g.est === 'nok').length}</b><span>Com documento NOK</span></div>
+    <div class="cnt pend"><b>${pessoas.filter(g => g.est === 'pend').length}</b><span>Com pendência</span></div></div>`;
+
+  const q = norm(F.q);
+  const L = COLABS.filter(g => (!F.st || (!g.sem && g.est === F.st)) &&
+    (!q || norm([g.nome, g.cpf, g.razao].join(' ')).includes(q) || (g.sem && 'sem colaborador identificado'.includes(q))));
+
+  montarGrid(colDefsColab(), L.map(linhaColab), r => abrirColab(COLABS.indexOf(r._g)), 'Nenhum colaborador encontrado.');
+}
+
+function linhaEquipe(eq) {
+  const r = resumoEquipe(eq);
+  return {
+    _eq: eq, key: eq.key, est: r.est,
+    nome: eqTitulo(eq),
+    lider: eq.lider || '',
+    qtd: eq.membros.length,
+    integrantes: eq.membros.map(m => m.nome).filter(Boolean).join(', '),
+    cpfs: eq.membros.map(m => m.cpf).join(' '),
+    nOk: r.nOk, nNok: r.nNok, nPend: r.nPend
+  };
+}
+
+function colDefsEquipe() {
+  return [
+    { headerName: 'Equipe', field: 'nome', flex: 1, minWidth: 220, pinned: 'left',
+      cellRenderer: p => `<div class="vg-nome"><b>${esc(p.value)}</b><small>${p.data.qtd} pessoa(s)</small></div>` },
+    { headerName: 'Líder', field: 'lider', minWidth: 180, flex: 1 },
+    { headerName: 'Integrantes', field: 'integrantes', minWidth: 260, flex: 2,
+      tooltipField: 'integrantes' },
+    { headerName: 'Status', field: 'est', width: 130,
+      valueFormatter: p => ({ ok: 'COMPLETA', nok: 'COM NOK', pend: 'PENDENTE' }[p.value] || ''),
+      cellRenderer: p => rBadge(p.value === 'ok' ? 'b-ok' : p.value === 'nok' ? 'b-nok' : 'b-warn',
+        p.value === 'ok' ? 'COMPLETA' : p.value === 'nok' ? 'COM NOK' : 'PENDENTE') },
+    { headerName: 'Progresso', width: 190,
+      comparator: (a, b, na, nb) => na.data.nOk - nb.data.nOk,
+      valueGetter: p => p.data.nOk,
+      cellRenderer: p => `<div style="width:100%">${rBarra(p.data.nOk, p.data.nNok, p.data.qtd || 1)}
+        <small style="color:#64748b">${p.data.nOk}/${p.data.qtd} completo(s)${p.data.nNok ? ' · ' + p.data.nNok + ' NOK' : ''}${p.data.nPend ? ' · ' + p.data.nPend + ' pend.' : ''}</small></div>` }
+  ];
+}
+
+function renderEquipes(cont, box) {
+  const base = EQUIPES.map(linhaEquipe);
+
+  cont.innerHTML = `<div class="counters">
+    <div class="cnt"><b>${base.length}</b><span>Equipes</span></div>
+    <div class="cnt ok"><b>${base.filter(x => x.est === 'ok').length}</b><span>Equipe completa</span></div>
+    <div class="cnt nok"><b>${base.filter(x => x.est === 'nok').length}</b><span>Com integrante NOK</span></div>
+    <div class="cnt pend"><b>${base.filter(x => x.est === 'pend').length}</b><span>Com pendência</span></div></div>`;
+
+  const q = norm(F.q);
+  const L = base.filter(r =>
+    (!F.st || r.est === F.st) &&
+    (!q || norm([r.nome, r.lider, r.integrantes, r.cpfs].join(' ')).includes(q)));
+
+  montarGrid(colDefsEquipe(), L, r => abrirEquipe(r.key), 'Nenhuma equipe encontrada.');
+}
+/* ---- Equipes ---- */
+const vazio = txt => `<span class="vazio">${txt}</span>`;
+const grupoDoMembro = m => COLABS.find(c => !c.sem && m.cpf.length === 11 && c.cpf === m.cpf)
+  || COLABS.find(c => !c.sem && m.nome && norm(c.nome) === norm(m.nome));
+
+function resumoEquipe(eq) {
+  const gs = eq.membros.map(grupoDoMembro).filter(Boolean);
+  const nOk = gs.filter(g => g.est === 'ok').length, nNok = gs.filter(g => g.est === 'nok').length;
+  const nPend = eq.membros.length - nOk - nNok;
+  return { gs, nOk, nNok, nPend, est: !eq.membros.length ? 'pend' : (nNok ? 'nok' : (nPend ? 'pend' : 'ok')) };
+}
+
 function cardColab(g, daEquipe) {
   const i = COLABS.indexOf(g);
   const oc = `abrirColab(${i}${daEquipe ? ',true' : ''})`;
@@ -454,73 +740,7 @@ function cardColab(g, daEquipe) {
   </div>`;
 }
 
-function renderLista() {
-  const box = el('lista'), cont = el('cont');
-  if (!box) return;
-  if (carga === 'carregando' && !COLABS.length) { cont.innerHTML = ''; box.innerHTML = '<p class="msg"><span class="spin"></span>Carregando do banco de dados...</p>'; return; }
-  if (carga === 'erro' && !COLABS.length) { cont.innerHTML = ''; box.innerHTML = `<p class="msg" style="color:var(--nok)">⚠ ${esc(erroMsg)}</p>`; return; }
-
-  if (F.modo === 'equipe') { renderEquipes(cont, box); return; }
-
-  const pessoas = COLABS.filter(g => !g.sem);
-  cont.innerHTML = `<div class="counters">
-    <div class="cnt"><b>${pessoas.length}</b><span>Colaboradores</span></div>
-    <div class="cnt ok"><b>${pessoas.filter(g => g.est === 'ok').length}</b><span>Documentação completa</span></div>
-    <div class="cnt nok"><b>${pessoas.filter(g => g.est === 'nok').length}</b><span>Com documento NOK</span></div>
-    <div class="cnt pend"><b>${pessoas.filter(g => g.est === 'pend').length}</b><span>Com pendência</span></div></div>`;
-
-  const q = norm(F.q);
-  const L = COLABS.filter(g => (!F.st || (!g.sem && g.est === F.st)) &&
-    (!q || norm([g.nome, g.cpf, g.razao].join(' ')).includes(q) || (g.sem && 'sem colaborador identificado'.includes(q))));
-  if (!L.length) { box.innerHTML = '<p class="msg">Nenhum colaborador encontrado.</p>'; return; }
-
-  box.innerHTML = `<div class="cgrid">` + L.map(g => cardColab(g, false)).join('') + `</div>`;
-}
-const vazio = txt => `<span class="vazio">${txt}</span>`;
-
-const grupoDoMembro = m => COLABS.find(c => !c.sem && m.cpf.length === 11 && c.cpf === m.cpf)
-  || COLABS.find(c => !c.sem && m.nome && norm(c.nome) === norm(m.nome));
-
-function resumoEquipe(eq) {
-  const gs = eq.membros.map(grupoDoMembro).filter(Boolean);
-  const nOk = gs.filter(g => g.est === 'ok').length, nNok = gs.filter(g => g.est === 'nok').length;
-  const nPend = eq.membros.length - nOk - nNok;
-  return { gs, nOk, nNok, nPend, est: !eq.membros.length ? 'pend' : (nNok ? 'nok' : (nPend ? 'pend' : 'ok')) };
-}
-
-function renderEquipes(cont, box) {
-  const todas = EQUIPES.map(e => ({ e, r: resumoEquipe(e) }));
-  cont.innerHTML = `<div class="counters">
-    <div class="cnt"><b>${todas.length}</b><span>Equipes</span></div>
-    <div class="cnt ok"><b>${todas.filter(x => x.r.est === 'ok').length}</b><span>Equipe completa</span></div>
-    <div class="cnt nok"><b>${todas.filter(x => x.r.est === 'nok').length}</b><span>Com integrante NOK</span></div>
-    <div class="cnt pend"><b>${todas.filter(x => x.r.est === 'pend').length}</b><span>Com pendência</span></div></div>`;
-  if (!EQUIPES.length) {
-    box.innerHTML = '<p class="msg">Nenhuma equipe ainda. Clique em <b>Disparar Homologação</b> para criar a primeira equipe.</p>';
-    return;
-  }
-  const q = norm(F.q);
-  const L = todas.filter(({ e, r }) => (!F.st || r.est === F.st) &&
-    (!q || norm([eqNome(e), e.lider, ...e.membros.map(m => m.nome + ' ' + m.cpf)].join(' ')).includes(q)));
-  if (!L.length) { box.innerHTML = '<p class="msg">Nenhuma equipe encontrada.</p>'; return; }
-  box.innerHTML = `<div class="cgrid">` + L.map(({ e, r }) => {
-    const n = e.membros.length || 1;
-    const pOk = Math.round(r.nOk / n * 100), pNok = Math.round(r.nNok / n * 100);
-    const rotEst = r.est === 'ok' ? ['b-ok', 'COMPLETA'] : r.est === 'nok' ? ['b-nok', 'COM NOK'] : ['b-warn', 'PENDENTE'];
-    return `<div class="ccard ${r.est}" onclick="abrirEquipe('${esc(e.key)}')">
-      <div class="hd"><div><div class="nm">${esc(eqTitulo(e)) || vazio('sem nome')}</div>
-        <div class="sub">${e.membros.length} pessoa(s)${e.lider ? ' · líder ' + esc(e.lider) : ''}</div></div>
-        <span class="badge ${rotEst[0]}">${rotEst[1]}</span></div>
-      <div class="bar"><i class="g" style="width:${pOk}%"></i><i class="r" style="width:${pNok}%"></i></div>
-      <div class="prog">${e.membros.length ? r.nOk + ' completo(s)' + (r.nNok ? ' · ' + r.nNok + ' com NOK' : '') + (r.nPend ? ' · ' + r.nPend + ' com pendência' : '') : 'Sem integrantes: envie documentos para formar a equipe'}</div>
-      <div class="pills">${e.membros.map(m => {
-        const g = grupoDoMembro(m);
-        return `<span class="pill ${g ? (g.est === 'ok' ? 'ok' : g.est === 'nok' ? 'nok' : '') : ''}">${esc((m.nome || 'Sem nome').split(' ')[0])}${m.lider ? ' ★' : ''}</span>`;
-      }).join('')}</div>
-    </div>`;
-  }).join('') + `</div>`;
-}
-
+// Tela da equipe. "Excluir equipe" vale para qualquer equipe (do banco ou local).
 function renderEquipe() {
   const eq = EQUIPES.find(e => e.key === curEq);
   if (!eq) { irHome(); return; }
@@ -534,8 +754,8 @@ function renderEquipe() {
       <div class="noprint" style="display:flex;gap:8px;flex-wrap:wrap">
         ${loc ? `<button class="primary" onclick="novoEnvioEquipe('${k}')">📤 Enviar documento</button>
           <button class="ghost" onclick="abrirAddMembro('${k}')">＋ Integrante</button>
-          <button class="ghost" onclick="eqRenomear('${k}')">✎ Renomear</button>
-          <button class="ghost" onclick="eqExcluir('${k}')">🗑 Excluir</button>` : ''}
+          <button class="ghost" onclick="eqRenomear('${k}')">✎ Renomear</button>` : ''}
+        <button class="ghost" onclick="excluirEquipe('${k}')">🗑 Excluir equipe</button>
         <button class="ghost" onclick="irHome()">← Voltar às equipes</button></div></div>
     ${typeof fluxoEquipe === 'function' ? fluxoEquipe(eq) : ''}
     ${!eq.membros.length ? '<p class="msg">Equipe ainda sem integrantes. Clique em <b>📤 Enviar documento</b>: a pessoa identificada no documento entra na equipe automaticamente (ou use <b>＋ Integrante</b>).</p>' : ''}
@@ -566,10 +786,11 @@ function linhaDoc(g, k) {
       ${a && !tec && st === 'NOK' ? `<button class="ghost sm" onclick="relevarNok('${esc(a.id)}')">⚖ Relevar NOK</button>` : ''}
       ${a && st === 'RELEVADO' ? `<button class="ghost sm" onclick="desfazerRelevo('${esc(a.id)}')">↩ Desfazer</button>` : ''}
       ${a ? `<button class="ghost sm" onclick="baixarDoc('${esc(a.id)}')">⬇ Baixar Doc</button>` : ''}
+      ${a ? `<button class="ghost sm" onclick="excluirEnvio('${esc(a.id)}')">🗑 Excluir</button>` : ''}
       ${d.pessoal ? '' : `<button class="${a ? 'ghost' : 'primary'} sm" onclick="novoEnvio('${esc(g.key)}')">${a ? 'Reenviar' : 'Enviar'}</button>`}
     </div></div>
     ${a && !tec ? `<div class="dbox hidden" id="dd_${esc(a.id)}"></div>` : ''}
-    ${a && st === 'NOK' ? blocoSugestao(d.id, g.cpf, esc(a.id)) : ''}`; 
+    ${a && st === 'NOK' ? blocoSugestao(d.id, g.cpf, esc(a.id)) : ''}`;
 }
 
 function tabelaEnvios(lista) {
@@ -579,13 +800,14 @@ function tabelaEnvios(lista) {
       <td>${esc(a.motivos_nok) || '-'}${a.status === 'RELEVADO' && a.justificativa_relevado ? `<div class="relinfo">Justificativa: ${esc(a.justificativa_relevado)}</div>` : ''}</td>
       <td style="white-space:nowrap"><button class="ghost sm" onclick="verArquivoHist('${esc(a.id)}')">🔍 Ver arquivo</button>
       <button class="ghost sm" onclick="baixarDoc('${esc(a.id)}')">⬇ Baixar Doc</button>
+      <button class="ghost sm" onclick="excluirEnvio('${esc(a.id)}')">🗑 Excluir</button>
       ${a.origem === 'tecnico' ? '' : `<button class="ghost sm" onclick="detalheHist('${esc(a.id)}','hd_')">Detalhes</button>`}</td></tr>
       <tr class="trd hidden" id="hd_${esc(a.id)}"><td colspan="6"></td></tr>`).join('') + `</table></div>`;
 }
 
 const RESP_DOCS = [
   { t: 'Responsabilidade da Empresa', cls: 'ok',  ids: ['aso', 'os_nr01', 'ficha_epi'] },
-  { t: 'Responsabilidade do Técnico', cls: 'nok', ids: ['nr35', 'nr10', 'nr06', 'contrato', 'rg', 'cnh'] }
+  { t: 'Responsabilidade do Técnico', cls: 'nok', ids: ['nr35', 'nr10', 'nr06', 'rg', 'cnh'] }
 ];
 
 function renderColab() {
@@ -610,7 +832,7 @@ function renderColab() {
       <div class="msg" style="margin-top:2px">${g.cpf ? 'CPF ' + esc(fmtCpf(g.cpf)) : 'CPF não identificado'}${g.razao ? ' · ' + esc(g.razao) : ''}${eqAtual ? ' · ' + esc(eqTitulo(eqAtual)) : ''}${g.homol ? ' · ⚖ Homologado pela diretoria em ' + esc(fmtDH(String(g.homol.decidido_em).replace('T',' '))) : ''}</div>
       <div style="margin-top:10px"><span class="badge ${rotEst[0]}">${rotEst[1]}</span>
         <span class="msg"> &nbsp;${g.nOk} de ${DOCS.length} OK${g.nNok ? ' · ' + g.nNok + ' NOK' : ''}${g.nPend ? ' · ' + g.nPend + ' pendente(s)' : ''}</span></div></div>
-      <div class="noprint" style="display:flex;gap:8px;flex-wrap:wrap"><button class="ghost" onclick="baixarOk('${esc(g.key)}')">⬇ Baixar OK</button><button class="ghost" onclick="voltarColab()">${rotVoltar}</button></div></div>
+      <div class="noprint" style="display:flex;gap:8px;flex-wrap:wrap"><button class="primary" onclick="finalizarHomologacao('${esc(g.key)}')">🏁 Finalizar Homologação</button><button class="ghost" onclick="baixarOk('${esc(g.key)}')">⬇ Baixar OK</button><button class="ghost" onclick="excluirEnviosColab('${esc(g.key)}')">🗑 Excluir envios</button><button class="ghost" onclick="excluirColaborador('${esc(g.key)}')">🗑 Excluir colaborador</button><button class="ghost" onclick="voltarColab()">${rotVoltar}</button></div></div>
 
     ${secoes.map(s => `<div class="secT ${s.cls}">${esc(s.t)} (${s.feitos} de ${s.idx.length} OK)</div>
       ${s.idx.map(k => linhaDoc(g, k)).join('')}`).join('')}
@@ -742,8 +964,9 @@ async function detalheHist(id, pref) {
   try {
     const j = await chamarApi({ acao:'detalhe', id });
     td.dataset.ok = 1;
-    td.innerHTML = tabelaItens({ itens:(j.itens || []).map(i => ({ ...i, obs:i.detalhe })), observacoes:'' }) +
-      (j.texto ? `<details><summary>Texto lido do documento</summary><pre class="raw">${esc(j.texto)}</pre></details>` : '');
+    td.innerHTML =
+  `<details open><summary>Verificações</summary>${tabelaItens({ itens:(j.itens || []).map(i => ({ ...i, obs:i.detalhe })), observacoes:'' })}</details>` +
+  (j.texto ? `<details><summary>Texto extraído</summary><pre class="raw">${esc(j.texto)}</pre></details>` : '');
   } catch (e) { td.innerHTML = `<span class="msg" style="color:var(--nok)">⚠ ${esc(e.message)}</span>`; }
 }
 async function aplicarRelevo(id, relevar, justificativa) {
@@ -839,10 +1062,57 @@ const dataIso = v => /^\d{4}-\d{2}-\d{2}/.test(v || '') ? String(v).slice(0, 10)
 const linkStorage = c => `${VDSB.SUPABASE_URL}/storage/v1/object/public/${BUCKET_DOCS}/${c}`;
 const tokenAdm = () => ((window.vdSessao && window.vdSessao()) || {}).token;
 
+const dataBR = v => { const m = String(v || '').match(/^(\d{2})\/(\d{2})\/(\d{4})$/); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
+const dataQualquer = v => dataIso(v) || dataBR(v);
+// percorre o objeto e junta toda data guardada em chave que contenha "valid" ou "venc"
+function acharValidades(o, acc) {
+  if (Array.isArray(o)) o.forEach(x => acharValidades(x, acc));
+  else if (o && typeof o === 'object') Object.keys(o).forEach(k => {
+    const v = o[k];
+    if (v && typeof v === 'object') acharValidades(v, acc);
+    else if (/valid|venc/i.test(k)) { const d = dataQualquer(v); if (d) acc.push(d); }
+  });
+  return acc;
+}
+// Validade enviada ao rollout. Ficha de EPI: se a IA não devolveu uma validade única,
+// usa o vencimento mais próximo entre os itens da ficha.
+function somarAnos(iso, n) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!m) return null;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  const dt = new Date(Date.UTC(y + n, mo - 1, d));
+  if (dt.getUTCMonth() !== mo - 1) dt.setUTCDate(0);          // 29/02 -> 28/02, igual ao Postgres
+  return dt.toISOString().slice(0, 10);
+}
+// Emissão enviada ao rollout. Tenta data_emissao e, se a IA usou outro nome, procura chaves parecidas.
+function emissaoRollout(tipo, r) {
+  const dd = r.dados || {}, reg = r.registro || {};
+  const direta = dataQualquer(dd.data_emissao || reg.data_emissao || r.data_emissao);
+  if (direta || !tipo) return direta;
+  const k = Object.keys(dd).find(x => /emiss|exame|realiz|data_aso|data_os/i.test(x) && dataQualquer(dd[x]));
+  if (k) return dataQualquer(dd[k]);
+  if (tipo.id === 'aso') {                                     // último recurso: data do exame mais recente
+    const L = (r.exames || []).map(e => dataQualquer(e.data)).filter(Boolean).sort();
+    if (L.length) return L[L.length - 1];
+  }
+  return null;
+}
+function validadeRollout(tipo, r) {
+  const dd = r.dados || {}, reg = r.registro || {};
+  // ASO: emissão + 1 ano; OS (NR01): emissão + 2 anos (mesma regra da trigger no banco)
+  if (tipo && (tipo.id === 'aso' || tipo.id === 'os_nr01')) {
+    const em = emissaoRollout(tipo, r);
+    if (em) return somarAnos(em, tipo.id === 'aso' ? 1 : 2);
+  }
+  const direta = dataQualquer(reg.validade || r.validade || dd.data_validade);
+  if (direta || !tipo || tipo.id !== 'ficha_epi') return direta;
+  const L = acharValidades(dd, []).concat(acharValidades(r.bruto || {}, []));
+  return L.length ? L.sort()[0] : null;
+}
+
 async function enviarParaRollout(f, r) {
   const dd = r.dados || {}, reg = r.registro || {};
   const tipo = tipoDe(r);
-  if (!tipo || !ROLLOUT_DOCS.includes(tipo.id)) return;       
+  if (!tipo || !ROLLOUT_DOCS.includes(tipo.id)) return;
   const cpf = digitos(dd.cpf);
   if (cpf.length !== 11) { toastDl('⚠ Rollout: CPF não identificado no documento, não enviado.', true); return; }
   const token = tokenAdm();
@@ -859,13 +1129,20 @@ async function enviarParaRollout(f, r) {
     const st = String(r.status || '').toUpperCase();
     await vdRpc('rollout_registrar_doc_adm', {
       p_token: token, p_cpf: cpf, p_doc_id: tipo.id,
-      p_nome: dd.nome || null, p_funcao: dd.funcao || null, p_cnpj: dd.cnpj || null,
+      p_nome: dd.nome || null, p_funcao: dd.funcao || null,
+      p_cnpj: tipo.id === 'aso' ? (dd.cnpj || null) : null,   // CNPJ exclusivo do ASO
       p_carga: dd.carga_horaria_horas ? parseInt(dd.carga_horaria_horas, 10) || null : null,
-      p_emissao: dataIso(dd.data_emissao),
-      p_validade: dataIso(reg.validade || r.validade || dd.data_validade),
+      p_emissao: emissaoRollout(tipo, r),
+      p_validade: validadeRollout(tipo, r),
       p_status: r.relevado ? 'RELEVADO' : (st === 'NOK' ? 'NOK' : 'OK'),
       p_link: linkStorage(caminho)
     });
+    rollGuardar(cpf, tipo.id, {
+      emissao: emissaoRollout(tipo, r),
+      validade: validadeRollout(tipo, r),
+      carga: dd.carga_horaria_horas ? parseInt(dd.carga_horaria_horas, 10) || null : null,
+      link: linkStorage(caminho)
+    }, { nome: dd.nome, funcao: dd.funcao, cnpj: tipo.id === 'aso' ? dd.cnpj : null });
     toastDl('Enviado para o rollout.', true);
   } catch (e) {
     if (subiu) { try { await fetch(`${VDSB.SUPABASE_URL}/storage/v1/object/${BUCKET_DOCS}/${caminho}`, { method: 'DELETE', headers: hdr }); } catch (_) {} }
@@ -967,7 +1244,7 @@ async function processar(it) {
         p_nome: f.name, p_mime: f.type || 'application/pdf', p_contexto: { assinaturas_digitais: it.sigs } });
     }
     it.estado = 'servidor'; idbPut(it);
-    fetch(FN_URL, { method: 'POST' }).catch(() => {});  
+    fetch(FN_URL, { method: 'POST' }).catch(() => {});
     pollFila();
   } catch (e) {
     it.estado = 'erro'; it.erro = e.message;
@@ -1166,8 +1443,10 @@ function blocoResultado(it) {
     const semAss = (r.assinaturas || []).some(a => !a.presente) || r.itens.some(i => i.status === 'NOK' && /assinatura/i.test(i.grupo + ' ' + i.item));
     if (semAss) det += `<div class="aviso">⚠ O arquivo tem assinatura digital, mas a análise marcou assinatura como ausente. Confira abrindo o arquivo no leitor de PDF (o aviso "não foi possível verificar algumas assinaturas" costuma ser só da cadeia de certificados do gov.br).</div>`;
   }
-  det += blocoDados(r) + tabelaItens(r);
-  h += `<details class="retorno noprint"><summary>Ver retorno da IA</summary>${det}</details>`;
+  h += `<details class="retorno noprint"><summary>Ver retorno da IA</summary>${det}
+    <details class="sub-ret" open><summary>Verificações</summary>${tabelaItens(r)}</details>
+    <details class="sub-ret"><summary>Texto extraído</summary>${blocoDados(r)}</details>
+  </details>`;
   if (!r.salvo && r.erro_salvar) h += `<p class="msg" style="color:var(--warn)">⚠ A análise não foi salva no histórico: ${esc(r.erro_salvar)}</p>`;
 
   h += `<div class="row"><button class="primary" onclick="verIdentificado('${it.uid}')">👤 Ver colaborador</button>
@@ -1217,7 +1496,7 @@ function novoEnvio(back, eq) {
   if (ENV.eq) curEq = ENV.eq;
   view = 'envio'; render();
 }
-function validarEnvio() { return Promise.resolve(); }  
+function validarEnvio() { return Promise.resolve(); }
 
 function novoEnvioEquipe(key) { curEq = key; novoEnvio(null, key); }
 function sairEnvio() {
@@ -1250,7 +1529,7 @@ function salvarBlob(blob, nome) {
 }
 function b64ParaU8(b64) {
   if (typeof b64 !== 'string') throw new Error('resposta sem dados do arquivo');
-  let s = b64.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/'); 
+  let s = b64.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
   if (s.length % 4 === 1) throw new Error('base64 inválido (' + s.length + ' caracteres)');
   while (s.length % 4) s += '=';
   const bin = atob(s), u8 = new Uint8Array(bin.length);
@@ -1281,6 +1560,7 @@ async function baixarDoc(id) {
 let baixando = false;
 async function baixarOk(key) {
   if (baixando) return;
+  const g1 = key ? COLABS.find(c => c.key === key) : null;
   const itens = [];
   COLABS.filter(g => !g.sem && (!key || g.key === key)).forEach(g =>
     DOCS.forEach((d, k) => {
@@ -1320,7 +1600,7 @@ async function baixarOk(key) {
       const zip = new JSZip();
       prontos.forEach(p => zip.file(p.nome, p.blob));
       toastDl('Compactando...');
-      const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });  
+      const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
       salvarBlob(blob, g1 ? `${limparNome(g1.nome || 'colaborador')}_documentos_OK.zip`
                          : `DOCUMENTOS_OK_${new Date().toISOString().slice(0, 10)}.zip`);
     }
@@ -1328,6 +1608,177 @@ async function baixarOk(key) {
     if (falhas.length) alert('Não foi possível baixar:\n' + falhas.join('\n'));
   } catch (e) { toastDl('Erro: ' + e.message, true); }
   baixando = false;
+}
+/* ===== Finalizar Homologação ===== */
+const DOC_CONTRATO_NOME = 'Contrato + Anexo / Cartão CNPJ';   // só para pré-selecionar "assinado" com análises antigas
+const HOM_API_URL = '';   // opcional: URL de uma API externa. Vazio = usa a RPC rollout_finalizar_homologacao
+const ROLL_DOCS = [
+  { id:'aso',       p:'aso',       nome:'ASO',          carga:false },
+  { id:'os_nr01',   p:'nr01_os',   nome:'OS (NR01)',    carga:false },
+  { id:'nr06',      p:'nr06',      nome:'NR 06',        carga:true  },
+  { id:'nr10',      p:'nr10',      nome:'NR 10',        carga:true  },
+  { id:'nr35',      p:'nr35',      nome:'NR 35',        carga:true  },
+  { id:'ficha_epi', p:'ficha_epi', nome:'Ficha de EPI', carga:false }
+];
+const LS_ROLL = 'vd_roll_v1';
+const rollLer = () => { try { return JSON.parse(localStorage.getItem(LS_ROLL) || '{}') || {}; } catch (_) { return {}; } };
+function rollGuardar(cpf, docId, info, pessoa) {
+  try {
+    const c = rollLer(), k = digitos(cpf);
+    c[k] = c[k] || { pessoa: {}, docs: {} };
+    c[k].docs[docId] = info;
+    Object.keys(pessoa || {}).forEach(x => { if (pessoa[x]) c[k].pessoa[x] = pessoa[x]; });
+    localStorage.setItem(LS_ROLL, JSON.stringify(c));
+  } catch (_) {}
+}
+const contratoAssinado = g => g.envios.some(a => a.documento === DOC_CONTRATO_NOME &&
+  ['OK', 'ATENCAO', 'RELEVADO'].includes(statusDoc(a.status)));
+
+function liderCpfDe(g) {
+  const eq = (curEq && EQUIPES.find(e => e.key === curEq && e.membros.some(m => m.cpf === g.cpf)))
+    || EQUIPES.find(e => e.membros.some(m => m.cpf === g.cpf));
+  const l = eq && eq.membros.find(m => m.lider);
+  return l ? l.cpf : g.cpf;
+}
+
+function montarPayloadHom(g, v) {
+  const cache = rollLer()[g.cpf] || { docs: {} };
+  const p = {
+    cpf: g.cpf, nome_completo: v.nome_completo || null, rg: v.rg || null, funcao: v.funcao || null,
+    data_nascimento: v.data_nascimento || null, contato: v.contato || null,
+    cnpj: digitos(v.cnpj) || null, lider_cpf: liderCpfDe(g)
+  };
+  ROLL_DOCS.forEach(d => {
+    const st = g.st[DOCS.findIndex(x => x.id === d.id)];
+    p[d.p + '_data_emissao'] = v[d.p + '_data_emissao'] || null;
+    p[d.p + '_data_validade'] = v[d.p + '_data_validade'] || null;
+    p[d.p + '_status'] = st === 'RELEVADO' ? 'RELEVADO' : st === 'NOK' ? 'NOK' : 'OK';
+    p[d.p + '_link'] = ((cache.docs || {})[d.id] || {}).link || null;
+    if (d.carga) p[d.p + '_carga_horaria'] = parseInt(v[d.p + '_carga_horaria'], 10) || null;
+  });
+  return p;
+}
+
+async function enviarHomologacao(payload) {
+  if (HOM_API_URL) {
+    const r = await fetch(HOM_API_URL, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: VDSB.SUPABASE_ANON_KEY }, body: JSON.stringify(payload) });
+    if (!r.ok) throw new Error('API respondeu ' + r.status);
+    return r.json().catch(() => ({}));
+  }
+  return vdRpc('rollout_finalizar_homologacao', { p_token: tokenAdm(), p_dados: payload });
+}
+
+async function finalizarHomologacao(key) {
+  const g = COLABS.find(c => c.key === key); if (!g || g.sem) return;
+  const cache = rollLer()[g.cpf] || { pessoa: {}, docs: {} };
+
+  // Linha do colaborador no rollout (fonte da verdade)
+  let db = {};
+  try {
+    toastDl('Carregando dados do rollout...');
+    db = (await vdRpc('rollout_obter_colaborador', { p_token: tokenAdm(), p_cpf: g.cpf })) || {};
+    const t = el('dlToast'); if (t) t.classList.add('hidden');
+  } catch (e) {
+    toastDl('⚠ Não foi possível ler o rollout: ' + e.message, true);
+  }
+
+  const pend = ROLL_DOCS.filter(d => { const s = g.st[DOCS.findIndex(x => x.id === d.id)]; return s === 'PENDENTE' || s === 'NOK'; }).map(d => d.nome);
+  const inp = (k, val, tipo, extra) => `<input type="${tipo || 'text'}" data-k="${k}" value="${esc(val || '')}" ${extra || ''} style="width:100%;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px">`;
+
+  const linhas = ROLL_DOCS.map(d => {
+    const k = DOCS.findIndex(x => x.id === d.id), st = g.st[k], c = (cache.docs || {})[d.id] || {};
+    const a = g.docs[DOCS[k].nome];
+
+    // Emissão: banco -> cache local -> histórico
+    const emi = dataQualquer(db[d.p + '_data_emissao']) || c.emissao || dataQualquer(a && (a.data_emissao || a.emissao)) || '';
+
+    // Validade: banco -> cache local -> histórico -> cálculo (ASO +1 ano, OS +2 anos)
+    let val = dataQualquer(db[d.p + '_data_validade']) || c.validade || dataQualquer(a && a.validade) || '';
+    if (!val && emi && (d.id === 'aso' || d.id === 'os_nr01')) val = somarAnos(emi, d.id === 'aso' ? 1 : 2) || '';
+
+    const carga = db[d.p + '_carga_horaria'] || c.carga || '';
+
+    return `<tr><td><b>${esc(d.nome)}</b></td>
+      <td>${rBadge(st === 'PENDENTE' ? 'b-warn' : bdg(st), st === 'PENDENTE' ? 'PENDENTE' : rot(st))}</td>
+      <td>${inp(d.p + '_data_emissao', emi, 'date')}</td>
+      <td>${inp(d.p + '_data_validade', val, 'date')}</td>
+      <td>${d.carga ? inp(d.p + '_carga_horaria', carga, 'number', 'min="0" placeholder="h"') : '—'}</td></tr>`;
+  }).join('');
+
+  const L = (t, campo) => `<div><label style="font-size:12px;color:#475569">${t}</label>${campo}</div>`;
+  const assinado = contratoAssinado(g);
+
+  // Campos da pessoa: banco -> cache -> histórico
+  const vNome   = db.nome_completo || g.nome || '';
+  const vRg     = db.rg || '';
+  const vFuncao = db.funcao || cache.pessoa.funcao || '';
+  const vNasc   = dataQualquer(db.data_nascimento) || '';
+  const vContato = db.contato || '';
+  const vCnpj   = db.cnpj || cache.pessoa.cnpj || '';
+
+  return vmDialog(`
+    <div class="vm-head"><div class="vm-ico warn">🏁</div>
+      <div class="vm-txt"><div class="vm-tit">Finalizar Homologação</div>
+      <div class="vm-sub">${esc(g.nome)} · CPF ${esc(fmtCpf(g.cpf))}</div></div></div>
+    <div class="vm-content" style="max-height:70vh;overflow:auto">
+      ${pend.length ? `<div class="aviso">⚠ Documentos pendentes ou NOK: <b>${esc(pend.join(', '))}</b>. Resolva (ou releve) antes de homologar.</div>` : ''}
+
+      <div style="margin:10px 0;padding:12px;border:2px solid #cbd5e1;border-radius:10px">
+        <b>O contrato foi assinado?</b>
+        <label style="margin-left:14px"><input type="radio" name="ctr" value="s" ${assinado ? 'checked' : ''}> Sim</label>
+        <label style="margin-left:14px"><input type="radio" name="ctr" value="n" ${assinado ? '' : 'checked'}> Não</label>
+        <div id="hmBanner" style="display:none;margin-top:10px;padding:12px;border-radius:8px;background:#fee2e2;border:2px solid #dc2626;color:#991b1b;font-weight:700">
+          ⚠ CONTRATO NÃO ASSINADO — a homologação só pode ser concluída com o contrato assinado.
+          <button class="ghost sm" id="hmJaAss" style="margin-left:8px">Já foi assinado? Corrigir</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">
+        ${L('Nome completo', inp('nome_completo', vNome))}
+        ${L('RG', inp('rg', vRg))}
+        ${L('Função', inp('funcao', vFuncao))}
+        ${L('Data de nascimento', inp('data_nascimento', vNasc, 'date'))}
+        ${L('Contato (telefone)', inp('contato', vContato))}
+        ${L('CNPJ', inp('cnpj', vCnpj))}
+      </div>
+
+      <div style="overflow-x:auto;margin-top:12px"><table>
+        <tr><th>Documento</th><th>Status</th><th>Emissão</th><th>Validade</th><th>Carga horária</th></tr>${linhas}</table></div>
+      <div class="msg" id="hmMsg" style="margin-top:8px"></div>
+    </div>
+    <div class="vm-foot"><button class="ghost" data-x>Cancelar</button>
+      <button class="primary" data-ok disabled>🏁 Homologar e enviar</button></div>`,
+  (o, fim) => {
+    o.querySelector('.vm-box').style.width = 'min(940px,96vw)';
+    const ok = o.querySelector('[data-ok]'), msg = o.querySelector('#hmMsg'), ban = o.querySelector('#hmBanner');
+    const ler = () => { const v = {}; o.querySelectorAll('[data-k]').forEach(i => { v[i.dataset.k] = i.value.trim(); }); return v; };
+    const ctr = () => (o.querySelector('input[name=ctr]:checked') || {}).value;
+    const checar = () => {
+      ban.style.display = ctr() === 'n' ? 'block' : 'none';
+      const v = ler(), falta = [];
+      if (!v.nome_completo) falta.push('nome');
+      if (!v.rg) falta.push('RG');
+      if (!v.funcao) falta.push('função');
+      if (!v.data_nascimento) falta.push('data de nascimento');
+      if (!v.contato) falta.push('contato');
+      if (digitos(v.cnpj).length !== 14) falta.push('CNPJ (14 dígitos)');
+      msg.textContent = falta.length ? 'Preencha: ' + falta.join(', ') : '';
+      ok.disabled = !!(pend.length || falta.length || ctr() !== 's');
+    };
+    o.addEventListener('input', checar); o.addEventListener('change', checar);
+    o.querySelector('#hmJaAss').onclick = () => { o.querySelector('input[name=ctr][value=s]').checked = true; checar(); };
+    o.querySelector('[data-x]').onclick = () => fim(null);
+    ok.onclick = async () => {
+      ok.disabled = true; msg.style.color = ''; msg.textContent = 'Enviando...';
+      try {
+        await enviarHomologacao(montarPayloadHom(g, ler()));
+        toastDl('✓ Homologação finalizada e enviada.', true);
+        fim(true); carregarHist();
+      } catch (e) { msg.style.color = '#dc2626'; msg.textContent = '⚠ Falha ao enviar: ' + e.message; ok.disabled = false; }
+    };
+    checar();
+  });
 }
 
 window.addEventListener('load', () => retomarFila());
