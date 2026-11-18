@@ -314,6 +314,12 @@ async function lerAssinaturasPdf(file) {
     const txt = new TextDecoder('latin1').decode(buf);
     const quantidade = (txt.match(/\/ByteRange\s*\[/g) || []).length;
     const signatarios = [], vistos = new Set();
+    const dec = new TextDecoder('utf-8');
+    const guardar = (nome, cpf) => {
+      nome = String(nome || '').replace(/\s+/g, ' ').trim();
+      if (nome.length < 5 || vistos.has(cpf)) return;
+      vistos.add(cpf); signatarios.push({ nome, cpf });
+    };
     const re = /\/Contents\s*<([0-9A-Fa-f\s]+)>/g;
     let m;
     while ((m = re.exec(txt))) {
@@ -321,12 +327,20 @@ async function lerAssinaturasPdf(file) {
       if (hex.length < 200) continue;
       const bytes = new Uint8Array(hex.length >> 1);
       for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-      const s = new TextDecoder('utf-8').decode(bytes);
-      const r2 = /([A-ZÀ-Ý][A-ZÀ-Ý' ]{4,}?):(\d{11})/g;
-      let n;
-      while ((n = r2.exec(s))) {
-        if (!vistos.has(n[2])) { vistos.add(n[2]); signatarios.push({ nome:n[1].trim(), cpf:n[2] }); }
+
+      // 1) campo do certificado (DER): tag 0x0C/0x13/0x16 + tamanho + "NOME:CPF"
+      for (let i = 0; i < bytes.length - 14; i++) {
+        const t = bytes[i];
+        if (t !== 0x0c && t !== 0x13 && t !== 0x16) continue;
+        const len = bytes[i + 1];
+        if (len < 13 || len > 127 || i + 2 + len > bytes.length) continue;
+        const n = /^(.{3,}):(\d{11})$/.exec(dec.decode(bytes.subarray(i + 2, i + 2 + len)));
+        if (n) guardar(n[1], n[2]);
       }
+      // 2) plano B: procura "NOME:CPF" em qualquer lugar, maiúsculas ou minúsculas
+      const s = dec.decode(bytes), r2 = /([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' .]{4,80}?):(\d{11})/g;
+      let n2;
+      while ((n2 = r2.exec(s))) guardar(n2[1], n2[2]);
     }
     return { quantidade, signatarios };
   } catch (_) { return nenhuma; }
@@ -1240,8 +1254,13 @@ async function processar(it) {
         headers: { apikey: VDSB.SUPABASE_ANON_KEY, 'Content-Type': f.type || 'application/pdf', 'x-upsert': 'true' } });
       if (!up.ok) throw new Error('Upload falhou (' + up.status + ')');
       it.sigs = await lerAssinaturasPdf(f);
+      let leitor = null;
+      try {
+        if (window.LeitorAssinatura) leitor = LeitorAssinatura.paraContexto(await LeitorAssinatura.analisar(f));
+      } catch (_) {}
       it.jobId = await vdRpc('fila_enfileirar', { p_token: tokenAdm(), p_path: caminho,
-        p_nome: f.name, p_mime: f.type || 'application/pdf', p_contexto: { assinaturas_digitais: it.sigs } });
+        p_nome: f.name, p_mime: f.type || 'application/pdf',
+        p_contexto: { assinaturas_digitais: it.sigs, assinatura_leitor: leitor } });
     }
     it.estado = 'servidor'; idbPut(it);
     fetch(FN_URL, { method: 'POST' }).catch(() => {});
@@ -1252,8 +1271,6 @@ async function processar(it) {
   }
   atualizarUI();
 }
-
-
 function pollFila() {
   if (_poll) return;
   _poll = setInterval(async () => {
